@@ -1,0 +1,17 @@
+{
+  "name": "infoshare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Information Sharing (CPFR) — a repeated stage game: cheap talk, reputation, and asymmetric information.",
+  "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elenakatok/infoshare.git"
+  },
+  "scripts": {
+    "harness": "node infoshare-round-loop.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
