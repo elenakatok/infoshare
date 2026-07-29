@@ -1,91 +1,180 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// ⚠ PLACEHOLDER_GAME round settings (spawn Part 1).
-// Replaced by the payoff slice, per Information_Sharing_Game_Specification_v1 §2–§3.
+// INFORMATION SHARING — round settings (spec §2, §3, §4).
 //
-// Every number a payoff, a draw or a legality rule depends on lives HERE, never as a
-// literal in spec.ts or resolver.ts. Two reasons, both learned the hard way:
+// Every number a payoff, a draw or a legality rule depends on lives HERE. Nothing is a
+// literal in spec.ts or resolver.ts, and nothing is hand-entered twice: the knowledge
+// check, the payoff table and the Information panel are all DERIVED from these values,
+// so none of them can grade or teach against a stale constant.
 //
-//  1. The instructor Settings page edits these at run time (see `configFields` in
-//     gameDefinition.ts). A literal buried in a resolver cannot be edited, and the
-//     game will be edited — every game in the fleet has been.
-//  2. A knowledge-check question whose answer is derived from config can never grade
-//     against a stale constant. Hand-entering "0.65" in a KC option and separately in
-//     a distribution is how a KC starts grading the wrong answer after a settings
-//     change nobody connected to it.
+// ── THE ONE EDITABLE TRIPLE (spec §2) ────────────────────────────────────────
+// The instructor edits the HIGH profile only — P(1 lot), P(2 lots), P(3 lots). LOW is
+// its exact reverse, derived here and never separately editable.
 //
-// ⚠ Anything added here must ALSO be added to `configFields` in gameDefinition.ts and
-// then redeployed on BOTH `getGameConfig` and `updateGameConfig` — the recognised-field
-// list is baked into the deployed bundle, and the symptom of forgetting is the
-// misleading "No recognised fields to update" on correct code.
+// That is not a convenience. Two independently editable profiles CAN be made
+// asymmetric, and an asymmetric pair silently breaks the symmetry the teaching result
+// rests on — the "value from collaboration" gap in §3.2 assumes the profiles mirror.
+// Three fields, not six, makes the broken state unrepresentable. Same rule as PD's
+// payoff matrix.
+//
+// ⚠ NAMING: P(1 lot) / P(2 lots) / P(3 lots), NEVER High/Medium/Low. "High" and "Low"
+// are the DEMAND TYPE. A settings field called "High" sitting next to a demand type
+// called HIGH is a collision waiting to be misread by whoever edits it next.
+//
+// ⚠ Anything added here must ALSO be declared in `configFields` in gameDefinition.ts,
+// and adding a field means redeploying BOTH getGameConfig AND updateGameConfig — the
+// recognised-field list is baked into the deployed bundle, and the symptom of
+// forgetting is the misleading "No recognised fields to update" on correct code.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** The demand type drawn each round. The Retailer sees it; the Supplier does not. */
+export type DemandType = 'HIGH' | 'LOW'
+export const DEMAND_TYPES: readonly DemandType[] = ['HIGH', 'LOW'] as const
+
+/** Lots. Demand and production share this domain (spec §2, §3). */
+export type Lots = 1 | 2 | 3
+export const LOTS: readonly Lots[] = [1, 2, 3] as const
+
+/** A distribution over {1,2,3} lots, indexed by lots. */
+export interface LotDistribution { 1: number; 2: number; 3: number }
+
 export interface RoundSettings {
-  /** Capacity when the round's drawn state is 'up'. */
-  highCapacity: number
-  /** Capacity when the round's drawn state is 'down'. */
-  lowCapacity: number
-  /** P(state = 'up') each round, drawn independently per group per round. */
-  pUp: number
-  /** Retailer earns this per unit sold. */
-  retailerRate: number
-  /** Supplier earns this per unit sold… */
-  supplierRate: number
-  /** …and pays this per unit committed, sold or not. */
+  /** P(demand type = HIGH), drawn per group per round, independent (§2). */
+  pHigh: number
+  /** The HIGH profile. LOW is its reverse — see `lowProfile`. */
+  high: LotDistribution
+  /** Prices (§3). The Retailer's margin is retailPrice − wholesalePrice. */
+  retailPrice: number
+  wholesalePrice: number
   unitCost: number
-  /** Inclusive legal bounds on Supplier's quantity. */
-  minQuantity: number
-  maxQuantity: number
+  /** Rounds (§4): fixed, shown, drawn per group. */
+  numRounds: number
 }
 
 export const DEFAULT_ROUND_SETTINGS: RoundSettings = {
-  highCapacity: 3,
-  lowCapacity: 1,
-  pUp: 0.5,
-  retailerRate: 1,
-  supplierRate: 2,
+  pHigh: 0.5,
+  // Spec §2.1: the SoPHIE original's cutoffs actually deliver 0.02 / 0.31 / 0.67, not
+  // the advertised 0.02 / 0.33 / 0.65. Elena's decision is to use the ADVERTISED
+  // numbers, which makes the classroom control-question answer of 0.65 exactly right
+  // rather than approximately right.
+  high: { 1: 0.02, 2: 0.33, 3: 0.65 },
+  retailPrice: 3,
+  wholesalePrice: 2,
   unitCost: 1,
-  minQuantity: 1,
-  maxQuantity: 3,
+  numRounds: 10,
 }
 
 /**
- * Build settings from the instance's stored config, falling back per field.
+ * LOW is the exact reverse of HIGH. Derived, never stored, never editable.
  *
- * Per-field fallback rather than all-or-nothing: an instance configured before a new
- * setting existed must keep working, and it does so by picking up the new default
- * rather than by refusing to load.
+ * P_LOW(k) = P_HIGH(4 − k): the mass on 3 lots under HIGH becomes the mass on 1 lot
+ * under LOW. With the default triple that is 0.65 / 0.33 / 0.02.
+ */
+export function lowProfile(high: LotDistribution): LotDistribution {
+  return { 1: high[3], 2: high[2], 3: high[1] }
+}
+
+/** The distribution for a demand type — the only way either profile is obtained. */
+export function profileFor(type: DemandType, s: RoundSettings): LotDistribution {
+  return type === 'HIGH' ? s.high : lowProfile(s.high)
+}
+
+// ── validation ─────────────────────────────────────────────────────────────────
+
+/**
+ * Tolerance on the triple's sum.
  *
- * ⚠ WHY A STRING IS ACCEPTED WHERE A NUMBER IS EXPECTED.
- * `ConfigFieldDef` in @mygames/game-server offers exactly three kinds — 'string',
- * 'positiveInt' and 'url'. THERE IS NO DECIMAL KIND. (The 'decimal' type that does
- * exist belongs to `OutcomeSchema`, a different thing entirely; do not go looking for
- * it here.) So any setting that is a probability or a rate — `pUp` below, and every
- * distribution a real game will want — must be declared `kind: 'string'` in
- * `configFields` and parsed on the way in.
+ * 1e-9 rather than exact equality: the values arrive as IEEE doubles through a text
+ * input, Firestore and JSON, and 0.02 + 0.33 + 0.65 is not exactly 1 in binary floating
+ * point. Wide enough for float dust; far too narrow to admit a real typo — 0.02/0.33/0.66
+ * is off by 0.01, seven orders of magnitude outside it.
+ */
+export const SUM_TOLERANCE = 1e-9
+
+export type Validation = { ok: true } | { ok: false; reason: string }
+
+const label = (k: Lots) => `P(${k} lot${k === 1 ? '' : 's'})`
+
+/**
+ * The triple must be a probability distribution: each entry in [0,1], summing to 1.
  *
- * That is a workaround, not a design. It costs the Settings page its numeric
- * validation: an instructor can type "0.65 " or "sixty-five" and the field accepts it,
- * so the parse below must be total — anything unparseable falls back to the default
- * rather than propagating NaN into a payoff.
+ * ⚠ CHECKED SERVER-SIDE, not only in Settings. `updateGameConfig` is a public callable.
+ * A triple that does not sum to 1 throws nowhere — it quietly biases every draw for the
+ * rest of the game, and the knowledge check goes on grading against it.
+ */
+export function validateHighProfile(high: LotDistribution): Validation {
+  for (const k of LOTS) {
+    const v = high[k]
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      return { ok: false, reason: `${label(k)} must be a number.` }
+    }
+    if (v < 0 || v > 1) {
+      return { ok: false, reason: `${label(k)} must be between 0 and 1 (got ${v}).` }
+    }
+  }
+  const sum = high[1] + high[2] + high[3]
+  if (Math.abs(sum - 1) > SUM_TOLERANCE) {
+    return {
+      ok: false,
+      reason: `The three probabilities must add up to 1 — they add up to ${sum.toFixed(4)}. ` +
+              'Adjust P(1 lot), P(2 lots) or P(3 lots) so the total is exactly 1.',
+    }
+  }
+  return { ok: true }
+}
+
+export function validateSettings(s: RoundSettings): Validation {
+  if (!(s.pHigh >= 0 && s.pHigh <= 1)) {
+    return { ok: false, reason: `P(HIGH) must be between 0 and 1 (got ${s.pHigh}).` }
+  }
+  if (s.retailPrice < s.wholesalePrice) {
+    // The Retailer's margin would be negative and the game inverts. Better refused than
+    // discovered from the payoff table mid-class.
+    return { ok: false, reason: 'Retail price must be at least the wholesale price.' }
+  }
+  if (s.numRounds < 1) return { ok: false, reason: 'There must be at least one round.' }
+  return validateHighProfile(s.high)
+}
+
+// ── reading instance config ────────────────────────────────────────────────────
+
+/** Config keys, in one place so settings.ts and gameDefinition.ts cannot drift. */
+export const CONFIG_KEYS = {
+  pHigh: 'p_high',
+  p1: 'p_lots_1',
+  p2: 'p_lots_2',
+  p3: 'p_lots_3',
+  retailPrice: 'retail_price',
+  wholesalePrice: 'wholesale_price',
+  unitCost: 'unit_cost',
+  numRounds: 'num_rounds',
+} as const
+
+/**
+ * Build settings from the instance's stored config, per field, defaults as the floor.
+ * Per-field rather than all-or-nothing: an instance configured before a setting existed
+ * keeps working by picking up the new default rather than refusing to load.
+ *
+ * An INVALID stored triple falls back to the default triple WHOLESALE — a half-edited
+ * distribution must never reach a draw. The write validator already rejects one, so this
+ * is the belt to that braces.
  */
 export function settingsFromConfig(config: Record<string, unknown> | undefined): RoundSettings {
-  const num = (key: keyof RoundSettings): number => {
+  const num = (key: string, fallback: number): number => {
     const v = config?.[key]
-    if (typeof v === 'number' && Number.isFinite(v)) return v
-    if (typeof v === 'string' && v.trim() !== '') {
-      const parsed = Number(v.trim())
-      if (Number.isFinite(parsed)) return parsed
-    }
-    return DEFAULT_ROUND_SETTINGS[key]
+    return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+  }
+  const d = DEFAULT_ROUND_SETTINGS
+  const high: LotDistribution = {
+    1: num(CONFIG_KEYS.p1, d.high[1]),
+    2: num(CONFIG_KEYS.p2, d.high[2]),
+    3: num(CONFIG_KEYS.p3, d.high[3]),
   }
   return {
-    highCapacity: num('highCapacity'),
-    lowCapacity: num('lowCapacity'),
-    pUp: num('pUp'),
-    retailerRate: num('retailerRate'),
-    supplierRate: num('supplierRate'),
-    unitCost: num('unitCost'),
-    minQuantity: num('minQuantity'),
-    maxQuantity: num('maxQuantity'),
+    pHigh: num(CONFIG_KEYS.pHigh, d.pHigh),
+    high: validateHighProfile(high).ok ? high : d.high,
+    retailPrice: num(CONFIG_KEYS.retailPrice, d.retailPrice),
+    wholesalePrice: num(CONFIG_KEYS.wholesalePrice, d.wholesalePrice),
+    unitCost: num(CONFIG_KEYS.unitCost, d.unitCost),
+    numRounds: num(CONFIG_KEYS.numRounds, d.numRounds),
   }
 }

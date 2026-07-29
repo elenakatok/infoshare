@@ -38,12 +38,11 @@ import {
   assertValidStageGameSpec,
   type GameState, type Seat,
 } from '@mygames/stage-engine'
-import { DEFAULT_ROUND_SETTINGS, type RoundSettings } from './settings'
+import { DEFAULT_ROUND_SETTINGS, type RoundSettings, type DemandType, type Lots } from './settings'
 import { makeRng } from './decide'
-import type { DrawnState } from './resolver'
 import {
   makeGameSpec, seatOfRole,
-  FIELD_STATE, STAGE_ORDER, STAGE_SIGNAL, STAGE_RESPOND, GAME_ROLES,
+  FIELD_DEMAND_TYPE, FIELD_ACTUAL_DEMAND, STAGE_ORDER, STAGE_MESSAGE, STAGE_PRODUCTION, GAME_ROLES,
   type SeatAction, type RoundResult, type GameRole, type SeatView,
   type StoredRoundRecord, type StageId, type EngineRecord,
 } from './spec'
@@ -220,11 +219,13 @@ export function toHistoryRows(state: RoundState): StoredRoundRecord[] {
     return {
       round: h.round,
       retailerSeat, supplierSeat,
-      signal: h.result.signal,
-      quantity: h.result.quantity,
-      state: h.result.state,
-      sold: h.result.sold,
+      message: h.result.message,
+      production: h.result.production,
+      demandType: h.result.demandType,
+      actualDemand: h.result.actualDemand,
+      sales: h.result.sales,
       profits: h.result.profits,
+      truthful: h.result.truthful,
       defaulted: { retailer: d.has(retailerSeat), supplier: d.has(supplierSeat) },
     }
   })
@@ -232,11 +233,12 @@ export function toHistoryRows(state: RoundState): StoredRoundRecord[] {
 
 /**
  * What ONE seat may see. The single source of truth for the student payload — the
- * callable returns this and nothing else, so there is one place to audit for leaks.
+ * callable returns this and nothing else, so there is one surface to audit for leaks.
  *
- * ⚠ `state` is set ONLY when the engine's reveal rule allows it. Absence, not
- * emptiness: `out.state = undefined` would put the key on the wire and defeat the
- * whole mechanism, so the assignment is guarded by a presence test.
+ * ⚠ THE TWO HIDDEN FIELDS ARE SET ONLY WHERE THE ENGINE ALLOWS IT. `out.demandType =
+ * undefined` would put the key on the wire and defeat the whole mechanism, so each
+ * assignment is guarded by a presence test on `view.fields`. The harness asserts the
+ * absence on the actual payload rather than trusting this.
  */
 export function buildSeatView(state: RoundState, seat: number, settings?: RoundSettings): SeatView {
   const role = roleOfSeat(state, seat)
@@ -246,10 +248,9 @@ export function buildSeatView(state: RoundState, seat: number, settings?: RoundS
   const view = engineSeatView(spec, state, seat)
   const stage = stageIdOf(state)
 
-  // The signal becomes visible when a stage that OBSERVES it is open — which is the
-  // engine's answer, not ours. Before that the key is not in `observed` at all, so a
-  // seat cannot read it early even by asking.
-  const signalSub = (view.observed[STAGE_SIGNAL] ?? {})[seatOfRole(state.roleBySeat, 'retailer')]
+  // The message becomes visible when a stage that OBSERVES it is open — the engine's
+  // answer, not ours. Before that it is not in `observed` at all.
+  const msgSub = (view.observed[STAGE_MESSAGE] ?? {})[seatOfRole(state.roleBySeat, 'retailer')]
 
   const out: SeatView = {
     seat,
@@ -259,12 +260,13 @@ export function buildSeatView(state: RoundState, seat: number, settings?: RoundS
     numRounds: view.roundCount,
     stage,
     owes: view.owes ? stage : null,
-    currentSignal: signalSub?.kind === 'signal' ? signalSub.signal : null,
+    currentMessage: msgSub?.kind === 'message' ? msgSub.message : null,
     history: toHistoryRows(state),
     pendingCount: enginePendingSeats(spec, state).length,
   }
-  if (FIELD_STATE in view.fields) out.state = view.fields[FIELD_STATE] as DrawnState
+  if (FIELD_DEMAND_TYPE in view.fields) out.demandType = view.fields[FIELD_DEMAND_TYPE] as DemandType
+  if (FIELD_ACTUAL_DEMAND in view.fields) out.actualDemand = view.fields[FIELD_ACTUAL_DEMAND] as Lots
   return out
 }
 
-export { STAGE_SIGNAL, STAGE_RESPOND, FIELD_STATE }
+export { STAGE_MESSAGE, STAGE_PRODUCTION, FIELD_DEMAND_TYPE, FIELD_ACTUAL_DEMAND }

@@ -132,8 +132,8 @@ export { getRoundReport } from './getRoundReport'
 // ── the round loop ─────────────────────────────────────────────────────────────
 export {
   openRound,
-  submitSignal,
-  submitRespond,
+  submitMessage,
+  submitProduction,
   checkRoundClock,
   getRoundView,
   getInstructorRoundView,

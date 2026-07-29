@@ -1,7 +1,7 @@
 import type { Outcome, OutcomeSchema, RoleConfig } from '@mygames/game-engine'
 import type { GameDefinition, PrepTextQuestion } from '@mygames/game-server'
 import { ALL_QUESTIONS } from './kcQuestions'
-import { DEFAULT_ROUND_SETTINGS } from './round/settings'
+import { DEFAULT_ROUND_SETTINGS as D, CONFIG_KEYS } from './round/settings'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE GAME DEFINITION — Information Sharing (infoshare).
@@ -145,13 +145,12 @@ export const infoshareGameDef: GameDefinition = {
     { key: 'player_role_name', kind: 'string', default: 'Player' },
     { key: 'player_sheet_url', kind: 'url', default: '/role-info/infoshare.pdf' },
     { key: 'round_seconds', kind: 'positiveInt', default: 120 },
-    { key: 'num_rounds', kind: 'positiveInt', default: 3 },
 
     /**
      * Clock is a PER-INSTANCE setting, not a build-time one: 'on' for a classroom
-     * session (stages time out to the injected default table) and 'off' for online
-     * play (a stage closes only when every required seat acts). `ConfigFieldDef` has
-     * no boolean kind either, hence a two-value string.
+     * session (stages time out to the injected default table, spec §6.1) and 'off' for
+     * online play (a stage closes only when its seat acts). `ConfigFieldDef` has no
+     * boolean kind, hence a two-value string.
      */
     { key: 'clock_mode', kind: 'string', default: 'on' },
 
@@ -163,15 +162,31 @@ export const infoshareGameDef: GameDefinition = {
      */
     { key: 'instructor_email', kind: 'string', default: '' },
 
-    // Round settings — see warning 1 above for why the probability is a string.
-    { key: 'pUp', kind: 'string', default: String(DEFAULT_ROUND_SETTINGS.pUp) },
-    { key: 'highCapacity', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.highCapacity },
-    { key: 'lowCapacity', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.lowCapacity },
-    { key: 'retailerRate', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.retailerRate },
-    { key: 'supplierRate', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.supplierRate },
-    { key: 'unitCost', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.unitCost },
-    { key: 'minQuantity', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.minQuantity },
-    { key: 'maxQuantity', kind: 'positiveInt', default: DEFAULT_ROUND_SETTINGS.maxQuantity },
+    // ── the game (spec §2, §3, §4) ────────────────────────────────────────────
+    //
+    // ⚠ THREE PROBABILITY FIELDS, NOT SIX. The instructor edits the HIGH profile; LOW
+    // is its exact reverse, derived in round/settings.ts and never editable. Two
+    // editable profiles could be made asymmetric, and asymmetry silently breaks the
+    // teaching result in §3.2. Three fields makes that unrepresentable.
+    //
+    // ⚠ LABELLED BY LOTS, NEVER High/Medium/Low — "High" and "Low" are the demand TYPE,
+    // and a settings field called "High" beside a type called HIGH will be misread.
+    //
+    // The sum-to-1 constraint spans all three and so cannot be expressed on any one of
+    // them; `validateHighProfile` enforces it server-side in updateGameConfig.
+    { key: CONFIG_KEYS.pHigh, kind: 'decimal', default: D.pHigh, min: 0, max: 1, step: 0.01 },
+    { key: CONFIG_KEYS.p1, kind: 'decimal', default: D.high[1], min: 0, max: 1, step: 0.01 },
+    { key: CONFIG_KEYS.p2, kind: 'decimal', default: D.high[2], min: 0, max: 1, step: 0.01 },
+    { key: CONFIG_KEYS.p3, kind: 'decimal', default: D.high[3], min: 0, max: 1, step: 0.01 },
+
+    // Prices (§3). Decimals, not positiveInt: a wholesale price of 2.50 is a perfectly
+    // reasonable variation and the defaults being whole numbers is a coincidence.
+    { key: CONFIG_KEYS.retailPrice, kind: 'decimal', default: D.retailPrice, min: 0, step: 0.01 },
+    { key: CONFIG_KEYS.wholesalePrice, kind: 'decimal', default: D.wholesalePrice, min: 0, step: 0.01 },
+    { key: CONFIG_KEYS.unitCost, kind: 'decimal', default: D.unitCost, min: 0, step: 0.01 },
+
+    // Rounds (§4): 10, fixed, shown, drawn per group.
+    { key: CONFIG_KEYS.numRounds, kind: 'positiveInt', default: D.numRounds },
   ],
 
   /** Info-page links. Every `key` here must also appear in `configFields` above. */

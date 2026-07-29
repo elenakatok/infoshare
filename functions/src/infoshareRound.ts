@@ -43,7 +43,7 @@ import {
   requiredSeats, stageIdOf, toHistoryRows,
   type RoundState,
 } from './round/machine'
-import { STAGE_SIGNAL, STAGE_RESPOND, type SeatAction } from './round/spec'
+import { STAGE_MESSAGE, STAGE_PRODUCTION, type SeatAction } from './round/spec'
 
 const isEmu = () => process.env.FUNCTIONS_EMULATOR === 'true'
 const authHeaderOf = (req: CallableRequest): string | undefined =>
@@ -319,20 +319,23 @@ async function seatOfCaller(data: Record<string, unknown>, request: CallableRequ
  * message the student sees is the one the engine enforced. A "friendlier" second check
  * in this file is two rule sets that drift.
  */
-const submitStage = (stage: typeof STAGE_SIGNAL | typeof STAGE_RESPOND) =>
+const submitStage = (stage: typeof STAGE_MESSAGE | typeof STAGE_PRODUCTION) =>
   onCall(CORS, async (request) => {
     const data = request.data as Record<string, unknown>
     const { iid, groupId, seat } = await seatOfCaller(data, request)
-    const action: SeatAction = stage === STAGE_SIGNAL
-      ? { kind: 'signal', signal: data['signal'] === 'down' ? 'down' : 'up' }
-      : { kind: 'respond', quantity: Number(data['quantity']) }
+    // The value is passed through UNVALIDATED on purpose — the engine's injected
+    // `validate` is the single rule set (spec §3.10). A second check here would be a
+    // second rule set, and the one a student is judged by is the one they cannot see.
+    const action: SeatAction = stage === STAGE_MESSAGE
+      ? { kind: 'message', message: data['message'] as never }
+      : { kind: 'production', production: Number(data['production']) as never }
     const r = await applySeatAction(iid, groupId, seat, action, nowMs(data))
     if (!r.ok) throw new HttpsError('failed-precondition', r.reason ?? 'Rejected.')
     return r
   })
 
-export const submitSignal = submitStage(STAGE_SIGNAL)
-export const submitRespond = submitStage(STAGE_RESPOND)
+export const submitMessage = submitStage(STAGE_MESSAGE)
+export const submitProduction = submitStage(STAGE_PRODUCTION)
 
 // ── the clock ──────────────────────────────────────────────────────────────────
 

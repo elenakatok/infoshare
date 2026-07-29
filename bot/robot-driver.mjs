@@ -41,6 +41,12 @@
 // has generated an attendance code and started the game.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ⚠ SLICE-1 STATUS: the robot driver's SLOT 2 still drives the PLACEHOLDER game's screens
+// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
+// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
+// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
+// rewritten with the screens, not before. The server chain is covered meanwhile by
+// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { createRequire } from 'node:module'
 import { decide, isStrategyImplemented } from '../functions/lib/round/decide.js'
 import { DEFAULT_ROUND_SETTINGS as S } from '../functions/lib/round/settings.js'

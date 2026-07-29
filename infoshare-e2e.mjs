@@ -28,6 +28,12 @@
 //   node infoshare-e2e.mjs        (env KEEP=1 leaves the stack up)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ⚠ SLICE-1 STATUS: the e2e harness still drives the PLACEHOLDER game's screens
+// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
+// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
+// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
+// rewritten with the screens, not before. The server chain is covered meanwhile by
+// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { openSync } from 'node:fs'
 import { spawn, execSync } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -191,8 +197,8 @@ const matchNow      = (gid) => callFn('triggerMatching', asDev(gid, {}))
 const startClass    = (gid) => callFn('startAllGroups', asDev(gid, {}))
 const dashboard     = (gid) => callFn('getGameDashboard', asDev(gid, {}))
 const roundView     = (gid, pid, g) => callFn('getRoundView', asStudent(gid, pid, { group_id: g }))
-const submitSignal  = (gid, pid, g, s) => callFn('submitSignal', asStudent(gid, pid, { group_id: g, signal: s }))
-const submitRespond = (gid, pid, g, q) => callFn('submitRespond', asStudent(gid, pid, { group_id: g, quantity: q }))
+const submitSignal  = (gid, pid, g, s) => callFn('submitMessage', asStudent(gid, pid, { group_id: g, message: s }))
+const submitRespond = (gid, pid, g, q) => callFn('submitProduction', asStudent(gid, pid, { group_id: g, production: q }))
 
 /** Instructor: "Score & Record" — the button that pushes to the gradebook. */
 const scoreAndRecord = (gid) => callFn('scoreAndRecord',

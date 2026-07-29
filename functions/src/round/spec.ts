@@ -1,144 +1,137 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE GAME, DECLARED — ⚠ PLACEHOLDER_GAME (spawn Part 1).
+// INFORMATION SHARING, DECLARED (spec §1.1, §2, §4, §5, §6.1).
 //
-// The SEAT ROLES below are infoshare's, frozen. Everything else — the stages, the
-// draw, the reveal point, the defaults — is still template-stage's placeholder game.
-// Replaced by the round-model slice, per Information_Sharing_Game_Specification_v1 §1.
+// This file DECLARES the game; @mygames/stage-engine RUNS it. Every payoff, draw,
+// default action and legality rule is INJECTED here and invoked by the engine, which
+// contains no game theory and must never contain any.
 //
-// This file DECLARES the game; @mygames/stage-engine RUNS it. Everything
-// game-specific — payoffs, draws, the default table, legality — is INJECTED here and
-// invoked by the engine, never computed by it. There is no game theory in the engine
-// and there must never be any.
+//   round open   the engine draws demand_type (HIGH/LOW) AND actual_demand (1/2/3)
+//   stage 1      RETAILER sends a message, HIGH or LOW. Sees the true type. The message
+//                need not be true — that is the subject of the game.
+//   stage 2      SUPPLIER commits production 1/2/3, having seen the MESSAGE only.
+//   resolution   payoffs; both draws become public and land in history.
 //
-// ── THE PLACEHOLDER GAME ──────────────────────────────────────────────────────
-// Two seats, two stages, one hidden draw, three rounds. It is deliberately the
-// smallest game that still exercises every mechanism a real stage game needs, so that
-// a spawn can delete it one piece at a time and always have something that runs:
+// ── WHY BOTH DRAWS HAPPEN AT ROUND OPEN ──────────────────────────────────────
+// `actual_demand` is not needed until resolution, and drawing it early means the value
+// EXISTS on the server while the Supplier is still deciding. That is deliberate, and it
+// is observationally identical: nothing between round open and resolution reads it, and
+// the reveal rule withholds it. The reason is determinism — the engine's `ResolveInput`
+// carries no rng (extraction spec §3.5.1), so resolution must be a function of state
+// alone. Drawing late would mean a resolver that rolls dice, and a class that cannot be
+// replayed.
 //
-//   round open   the engine draws `state_draw` — 'up' or 'down'
-//   stage signal  RETAILER sends 'up' or 'down'. Retailer SEES the true draw. The signal
-//                 need not match it: cheap talk is the point of the shape.
-//   stage respond SUPPLIER commits a quantity, having seen the signal and NOT the draw.
-//   resolution    payoffs; the draw becomes public and lands in history.
-//
-// ── THE FOUR MECHANISMS, AND WHERE THEY ARE ──────────────────────────────────
-//  1. SEQUENTIAL-WITH-OBSERVATION  `observes: [STAGE_SIGNAL]` on the respond stage.
-//     Omit it and the stage sees nothing earlier — opt-in, so a simultaneous stage is
-//     sealed by construction rather than by remembering to hide something.
-//  2. STAGE-SCOPED FIELD REVEAL    `fields[]` below. `state_draw` is visible to Retailer
-//     throughout, to nobody else until `revealAt: 'resolution'`.
-//  3. INJECTED DEFAULTS            `defaultFor` on every stage, because `hasClock` is
-//     true. The engine has no fallback and will never invent one.
-//  4. INJECTED LEGALITY            `validate`. The engine enforces turn order and
-//     double-submission itself; everything about the VALUE is the game's business.
-//
-// ── THE RULE THAT KEEPS PRIVATE STATE PRIVATE ────────────────────────────────
-// A key of `roundFields` with NO matching entry in `fields[]` is UNDECLARED, and
-// undeclared round state is private at every point in the round — `visibleFields`
-// only ever exposes declared fields. So server-side bookkeeping (a counter a default
-// needs, a cached total) rides `roundFields` safely by simply not being declared.
-// Declaring a field public costs one line; leaking one costs a class.
+// ⚠ THE COST OF THAT CHOICE IS A LEAK SURFACE, AND IT IS PAID FOR BY ASSERTION.
+// Because both values exist early, "the engine hides them" is not enough — the
+// SUPPLIER'S ACTUAL PAYLOAD must be checked for absence, on the wire, at stage 2:
+// `'demand_type' in payload === false` plus a scan of every key, never a null or a blank
+// standing in for hidden. Same for any client-readable Firestore document. The precedent
+// is Pricing's competitor rule ids reaching the browser through config/main via the SDK
+// while every callable payload was clean.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { Seat, StageGameSpec, StageContext, RoundRecord } from '@mygames/stage-engine'
-import type { RoundSettings } from './settings'
-import { resolveRound, validateQuantity, type DrawnState } from './resolver'
+import {
+  LOTS, profileFor,
+  type DemandType, type Lots, type RoundSettings,
+} from './settings'
+import { resolveRound, validateMessage, validateProduction } from './resolver'
 
-// ── roles ──────────────────────────────────────────────────────────────────────
+// ── roles (spec §5) ────────────────────────────────────────────────────────────
 
 /**
- * ⚠ GENERIC ON PURPOSE. Rename both of these for your game and the compiler will walk
- * you through every site that has to change. Roles are assigned LATE (immediately
- * before round 1, seeded shuffle), so the MATCHING role in gameDefinition.ts is a
- * single undifferentiated `player` — these two are the SEAT roles and matching never
- * sees them.
+ * THE DECLARED ROLE UNIVERSE (extraction spec §3.8). Every role key used in
+ * `actingRoles` or `visibleTo` must appear here, so a mistyped key is caught at spec
+ * validation — before any group exists — rather than silently skipping a stage.
+ *
+ * Assigned LATE: a group is two interchangeable seats until play begins, and the roles
+ * are revealed at game start by a seeded shuffle. That is what lets the knowledge check
+ * use the late-assignment gate, and what keeps seat move and bot fill role-blind.
  */
 export type GameRole = 'retailer' | 'supplier'
 export const GAME_ROLES: GameRole[] = ['retailer', 'supplier']
-
 export const ROLE_LABEL: Record<GameRole, string> = { retailer: 'Retailer', supplier: 'Supplier' }
 
 // ── stages ─────────────────────────────────────────────────────────────────────
 
-export const STAGE_SIGNAL = 'signal'
-export const STAGE_RESPOND = 'respond'
-export const STAGE_ORDER = [STAGE_SIGNAL, STAGE_RESPOND] as const
+export const STAGE_MESSAGE = 'message'
+export const STAGE_PRODUCTION = 'production'
+export const STAGE_ORDER = [STAGE_MESSAGE, STAGE_PRODUCTION] as const
 export type StageId = (typeof STAGE_ORDER)[number]
 
-// ── round-state fields ─────────────────────────────────────────────────────────
+// ── round fields ───────────────────────────────────────────────────────────────
 
-/**
- * DECLARED, and therefore subject to the reveal rules below. Drawn at round open, so
- * it exists on the server before Supplier decides — the engine is what keeps it off
- * Supplier's wire, and the harness asserts the ABSENCE of the key rather than trusting it.
- */
-export const FIELD_STATE = 'state_draw'
+/** The truth. Visible to the Retailer throughout; to everyone once the round resolves. */
+export const FIELD_DEMAND_TYPE = 'demand_type'
+/** Actual demand in lots. Visible to NOBODY until resolution — not even the Retailer. */
+export const FIELD_ACTUAL_DEMAND = 'actual_demand'
 
-// ── the action and the result ──────────────────────────────────────────────────
+// ── actions ────────────────────────────────────────────────────────────────────
 
-/**
- * One seat's submission. A discriminated union, so a seat cannot submit the wrong
- * stage's action shape and have it silently typecheck.
- */
 export type SeatAction =
-  | { kind: 'signal'; signal: DrawnState }
-  | { kind: 'respond'; quantity: number }
+  | { kind: 'message'; message: DemandType }
+  | { kind: 'production'; production: Lots }
 
-/** What the injected resolver returns; the stored history record is built from it. */
 export interface RoundResult {
-  signal: DrawnState
-  quantity: number
-  state: DrawnState
-  capacity: number
-  sold: number
+  message: DemandType
+  production: Lots
+  demandType: DemandType
+  actualDemand: Lots
+  sales: number
   profits: { retailer: number; supplier: number }
+  truthful: boolean
 }
 
 export type EngineRecord = RoundRecord<SeatAction, RoundResult>
 export type GameStageContext = StageContext<SeatAction>
 
+
+// ── the shapes screens and reports read ────────────────────────────────────────
+
+/** One completed round, flattened. Identical for both seats — history has no secrets. */
+export interface StoredRoundRecord {
+  round: number
+  retailerSeat: number
+  supplierSeat: number
+  message: DemandType
+  production: Lots
+  demandType: DemandType
+  actualDemand: Lots
+  sales: number
+  profits: { retailer: number; supplier: number }
+  /** message === demandType. The Tier-3 signature series (§10). */
+  truthful: boolean
+  /** Seats whose submission came from a clock default. Reported, never charted (§10.1). */
+  defaulted: { retailer: boolean; supplier: boolean }
+}
+
 /**
- * What one seat may see right now — the shape the student UI renders and the ONLY
- * thing `decide()` is handed.
+ * What ONE seat may see right now — the student payload, and the only thing the round
+ * callable returns.
  *
- * ⚠ `state` is OPTIONAL and that is load-bearing. When the reveal rule withholds the
- * draw the key is ABSENT — not null, not undefined-but-present. A leaked-but-blank key
- * still tells Supplier that a draw exists and that the server chose to hide it, and it
- * survives a careless `?? 'unknown'` downstream. Consumers must test presence
- * (`'state' in view`) or compare strictly; never `view.state == null`.
+ * ⚠ `demandType` and `actualDemand` are OPTIONAL and that is the mechanism. When the
+ * reveal rule withholds a draw the KEY IS ABSENT — not null, not undefined-but-present.
+ * Consumers must test presence (`'demandType' in view`); `view.demandType == null` and
+ * `view.demandType ?? 'unknown'` both quietly turn "hidden" into a rendered value.
  */
 export interface SeatView {
   seat: number
   role: GameRole
   status: 'in_progress' | 'finished'
   round: number
-  /** null when the round count is hidden and the game is still running. */
   numRounds: number | null
   stage: StageId | null
   owes: StageId | null
-  /** Retailer's signal, once the signal stage has closed. */
-  currentSignal: DrawnState | null
-  /** Present ONLY where the reveal rule allows it. See the warning above. */
-  state?: DrawnState
+  /** The Retailer's message, once stage 1 has closed. */
+  currentMessage: DemandType | null
+  /** Present ONLY for the Retailer, and only before resolution. */
+  demandType?: DemandType
+  /** Never present before resolution — hidden from BOTH seats. */
+  actualDemand?: Lots
   history: StoredRoundRecord[]
   pendingCount: number
 }
 
-/** One completed round, as stored and as the history table renders it. */
-export interface StoredRoundRecord {
-  round: number
-  retailerSeat: number
-  supplierSeat: number
-  signal: DrawnState
-  quantity: number
-  state: DrawnState
-  sold: number
-  profits: { retailer: number; supplier: number }
-  /** Seats whose submission came from a clock default. Reported, never charted. */
-  defaulted: { retailer: boolean; supplier: boolean }
-}
-
-// ── reading the engine's per-round submissions ────────────────────────────────
+// ── reading submissions ────────────────────────────────────────────────────────
 
 type Subs = Readonly<Record<string, Readonly<Record<Seat, SeatAction>>>>
 
@@ -147,112 +140,137 @@ export function seatOfRole(roleBySeat: Readonly<Record<Seat, string>>, role: Gam
   return found === undefined ? -1 : Number(found)
 }
 
-export function signalOf(subs: Subs, roleBySeat: Readonly<Record<Seat, string>>): DrawnState | null {
-  const a = (subs[STAGE_SIGNAL] ?? {})[seatOfRole(roleBySeat, 'retailer')]
-  return a && a.kind === 'signal' ? a.signal : null
+export function messageOf(subs: Subs, roleBySeat: Readonly<Record<Seat, string>>): DemandType | null {
+  const a = (subs[STAGE_MESSAGE] ?? {})[seatOfRole(roleBySeat, 'retailer')]
+  return a && a.kind === 'message' ? a.message : null
 }
 
-export function quantityOf(subs: Subs, roleBySeat: Readonly<Record<Seat, string>>): number | null {
-  const a = (subs[STAGE_RESPOND] ?? {})[seatOfRole(roleBySeat, 'supplier')]
-  return a && a.kind === 'respond' ? a.quantity : null
+export function productionOf(subs: Subs, roleBySeat: Readonly<Record<Seat, string>>): Lots | null {
+  const a = (subs[STAGE_PRODUCTION] ?? {})[seatOfRole(roleBySeat, 'supplier')]
+  return a && a.kind === 'production' ? a.production : null
+}
+
+// ── the draw ───────────────────────────────────────────────────────────────────
+
+/**
+ * Draw lots from a distribution using the engine's seeded stream.
+ *
+ * Cumulative over LOTS in order, so the mapping from a uniform draw to a lot count is
+ * fixed and reproducible. The final `?? 3` guards float dust only — the cumulative sum
+ * can land a hair under 1 — and is never reached for a validated triple.
+ */
+export function drawLots(rng: () => number, dist: { 1: number; 2: number; 3: number }): Lots {
+  const u = rng()
+  let acc = 0
+  for (const k of LOTS) {
+    acc += dist[k]
+    if (u < acc) return k
+  }
+  return 3
 }
 
 // ── the spec ───────────────────────────────────────────────────────────────────
 
 export interface SpecOptions {
   settings: RoundSettings
-  numRounds: number
+  /** Overrides settings.numRounds when the instance config differs. */
+  numRounds?: number
 }
 
-/**
- * ── ON DRAWS AND SEEDS ────────────────────────────────────────────────────────
- * `openRound` below draws from the ENGINE's seeded stream (the `rng` argument),
- * derived from the group's seed in state. That is the right default: reproducible,
- * JSON-serialisable, and nothing extra to thread through.
- *
- * The one reason to do otherwise is PARITY WITH AN EXISTING GAME — if a game already
- * shipped with its own `makeRng(seed + round * k)` stream, adopting the engine's would
- * silently change which rounds drew what for every existing seed, taking every
- * seed-pinned harness assertion with it. Such a game closes over its own `seed` in
- * `SpecOptions` instead. A NEW game has no such history and should not invent one.
- */
 export function makeGameSpec({ settings: s, numRounds }: SpecOptions): StageGameSpec<SeatAction, RoundResult> {
+  const rounds = numRounds ?? s.numRounds
+
   return {
-    // THE DECLARED ROLE UNIVERSE. Every role key used in `actingRoles` or `visibleTo`
-    // must appear here, so a mistyped key is caught at spec validation — before any
-    // group exists — rather than silently skipping a stage at run time.
     roles: GAME_ROLES,
 
     stages: [
       {
-        id: STAGE_SIGNAL,
+        // ── stage 1: the message. Free, and that is the point (spec §1.2). ──────
+        id: STAGE_MESSAGE,
         actingRoles: ['retailer'],
         validate: (_seat, action) => {
-          if (action.kind !== 'signal') return 'Only Retailer sends a signal.'
-          return action.signal === 'up' || action.signal === 'down' ? null : 'Choose up or down.'
-        },
-        /**
-         * The clock default. It must be a COMPETENT move, so the present partner's
-         * game stays intact — a default that plays badly punishes the student who DID
-         * turn up. It is recorded against the absent seat in `timeouts` and surfaces
-         * in the timeout report; it never touches anyone's score automatically.
-         */
-        defaultFor: () => ({ kind: 'signal', signal: 'up' }),
-      },
-      {
-        id: STAGE_RESPOND,
-        actingRoles: ['supplier'],
-        // Supplier may see the signal. Supplier may NOT see `state_draw` — that is the
-        // `fields[]` rule below, not this one. `observes` governs SUBMISSIONS.
-        observes: [STAGE_SIGNAL],
-        validate: (_seat, action) => {
-          if (action.kind !== 'respond') return 'Only Supplier commits a quantity.'
-          const check = validateQuantity(action.quantity, s)
+          if (action.kind !== 'message') return 'Only the Retailer sends a message.'
+          const check = validateMessage(action.message)
           return check.ok ? null : check.reason
         },
-        defaultFor: () => ({ kind: 'respond', quantity: Math.round((s.minQuantity + s.maxQuantity) / 2) }),
+        /**
+         * Spec §6.1 — LOCKED. No message → HIGH.
+         *
+         * The Retailer always prefers production 3 (§3.1), so HIGH is the move a
+         * self-interested Retailer has a reason to make in every round. It takes no side
+         * and leaks no information the student did not give.
+         *
+         * ⚠ §10.1: because HIGH is "truthful" roughly half the time BY ACCIDENT, a
+         * defaulted round must be EXCLUDED from the Tier-3 proportion-truthful chart —
+         * the chart the 9/28 lecture opens on. The default is recorded here; the
+         * exclusion is the reports slice's job, and this is the note that says so.
+         */
+        defaultFor: () => ({ kind: 'message', message: 'HIGH' }),
+      },
+      {
+        // ── stage 2: production. Sees the MESSAGE, not the truth. ───────────────
+        id: STAGE_PRODUCTION,
+        actingRoles: ['supplier'],
+        // `observes` governs SUBMISSIONS: the Supplier may read stage 1's message. It
+        // does NOT grant the round fields — that is the `fields` rule below, and the two
+        // are deliberately separate mechanisms.
+        observes: [STAGE_MESSAGE],
+        validate: (_seat, action) => {
+          if (action.kind !== 'production') return 'Only the Supplier sets production.'
+          const check = validateProduction(action.production, s)
+          return check.ok ? null : check.reason
+        },
+        /** Spec §6.1 — LOCKED. No production → 2. A competent, side-neutral move. */
+        defaultFor: () => ({ kind: 'production', production: 2 }),
       },
     ],
 
     fields: [
       /**
-       * THE REVEAL. Retailer sees the draw from the moment the round opens (that is what
-       * makes Retailer the informed side); nobody else sees it until the round resolves.
-       *
-       * `revealAt: 'resolution'` is the terminal reveal. To reveal MID-round instead —
-       * at the moment a later stage opens, so the acting seats can decide on it — name
-       * that stage id here; the reveal is INCLUSIVE of the named stage and permanent
-       * for the rest of the round.
+       * The Retailer is the informed side: they see the type from the moment the round
+       * opens. Everyone sees it once the round resolves, which is what makes a lie
+       * discoverable exactly one round later (spec §1.2) — and therefore what makes
+       * reputation possible at all.
        */
-      { name: FIELD_STATE, visibleTo: ['retailer'], revealAt: 'resolution' },
+      { name: FIELD_DEMAND_TYPE, visibleTo: ['retailer'], revealAt: 'resolution' },
+      /**
+       * Actual demand is hidden from BOTH seats until resolution. The Retailer knows the
+       * TYPE, never the realisation (spec §1.2) — so `visibleTo` is empty, NOT
+       * ['retailer'].
+       */
+      { name: FIELD_ACTUAL_DEMAND, visibleTo: [], revealAt: 'resolution' },
     ],
 
-    roundCount: { mode: 'fixed', n: numRounds, display: 'shown', drawScope: 'group' },
+    // Spec §4: shown, not hidden. The end-game effect is WANTED here — last-round lying
+    // is the cleanest callback to the PD backward-induction lecture.
+    roundCount: { mode: 'fixed', n: rounds, display: 'shown', drawScope: 'group' },
     endCondition: { kind: 'fixedRounds' },
     groupSize: { n: 2 },
 
     /**
-     * A GAME-LEVEL declaration, not a mode. The engine knows nothing about
-     * classroom-versus-online and must not learn: mode lives in the game and the
-     * shared platform. `hasClock: false` removes the timeout path entirely —
-     * `expireStage` throws rather than quietly doing nothing, so a clockless game
-     * cannot grow a clock by accident.
-     *
-     * A game that runs BOTH modes (classroom on a clock, online without one) declares
-     * `true` here and simply never calls the clock callable in online instances.
+     * The game HAS a clock; whether it runs is per-instance (spec §6). Classroom sets
+     * clock_mode 'on' and stages time out to the defaults above; online sets 'off' and a
+     * stage closes only when its seat acts. The engine knows nothing about mode and must
+     * not learn — that lives in the game and the platform.
      */
     hasClock: true,
 
-    openRound: (_ctx, rng) => ({
-      [FIELD_STATE]: (rng() < s.pUp ? 'up' : 'down') satisfies DrawnState,
-    }),
+    openRound: (_ctx, rng) => {
+      const demandType: DemandType = rng() < s.pHigh ? 'HIGH' : 'LOW'
+      const actualDemand = drawLots(rng, profileFor(demandType, s))
+      return { [FIELD_DEMAND_TYPE]: demandType, [FIELD_ACTUAL_DEMAND]: actualDemand }
+    },
 
     resolveRound: (input) => {
-      const signal = signalOf(input.submissions, input.roleBySeat) ?? 'up'
-      const quantity = quantityOf(input.submissions, input.roleBySeat) ?? s.minQuantity
-      const state = (input.roundFields[FIELD_STATE] as DrawnState | undefined) ?? 'up'
+      // Defaults have already been applied by the engine if a seat went silent, so a
+      // missing submission here would be an engine bug rather than an absent student.
+      // The fallbacks mirror the default table so a round can still resolve either way.
+      const message = messageOf(input.submissions, input.roleBySeat) ?? 'HIGH'
+      const production = productionOf(input.submissions, input.roleBySeat) ?? 2
+      const demandType = input.roundFields[FIELD_DEMAND_TYPE] as DemandType
+      const actualDemand = input.roundFields[FIELD_ACTUAL_DEMAND] as Lots
       // INVOKED, never computed here.
-      return resolveRound({ signal, quantity, state }, s)
+      return resolveRound({ message, production, demandType, actualDemand }, s)
     },
   }
 }

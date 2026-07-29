@@ -19,6 +19,12 @@
 // classroom project (the gradebook read).
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ⚠ SLICE-1 STATUS: the production smoke still drives the PLACEHOLDER game's screens
+// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
+// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
+// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
+// rewritten with the screens, not before. The server chain is covered meanwhile by
+// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { chromium } from 'playwright'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { createRequire } from 'node:module'

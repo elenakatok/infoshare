@@ -75,8 +75,8 @@ const open    = (gid, seed) => callFn('openRound', { _dev: { game_instance_id: g
 const sview   = (gid, pid) => callFn('getRoundView', asStudent(gid, pid, { group_id: 'g' }))
 const iview   = (gid) => callFn('getInstructorRoundView', asDev(gid, { group_id: 'g' }))
 const dash    = (gid) => callFn('getGameDashboard', asDev(gid, {}))
-const signal  = (gid, pid, s) => callFn('submitSignal', asStudent(gid, pid, { group_id: 'g', signal: s }))
-const respond = (gid, pid, q) => callFn('submitRespond', asStudent(gid, pid, { group_id: 'g', quantity: q }))
+const message = (gid, pid, m) => callFn('submitMessage', asStudent(gid, pid, { group_id: 'g', message: m }))
+const produce = (gid, pid, q) => callFn('submitProduction', asStudent(gid, pid, { group_id: 'g', production: q }))
 const tick    = (gid, now) => callFn('checkRoundClock', {
   _test: { participant_id: PIDS[0], game_instance_id: gid, now_ms: now },
   _dev: { now_ms: now }, group_id: 'g',
@@ -93,9 +93,9 @@ async function roleMap(gid) {
 }
 
 /** Play one full round with real (non-defaulted) actions. */
-async function playRound(gid, rm, sig, qty) {
-  await signal(gid, rm.retailer, sig)
-  await respond(gid, rm.supplier, qty)
+async function playRound(gid, rm, msg, prod) {
+  await message(gid, rm.retailer, msg)
+  await produce(gid, rm.supplier, prod)
 }
 
 // ── stack lifecycle ────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ async function main() {
     check(!!rm.retailer && !!rm.supplier && rm.retailer !== rm.supplier,
       'roles assigned LATE — exactly one retailer and one supplier, and they differ')
 
-    for (let r = 1; r <= 3; r++) await playRound(gid, rm, 'up', 2)
+    for (let r = 1; r <= 3; r++) await playRound(gid, rm, 'HIGH', 2)
 
     const v = await sview(gid, rm.retailer)
     check(v.ok && v.result.view.status === 'finished', 'game finished after 3 rounds')
@@ -173,15 +173,15 @@ async function main() {
     await open(gid, 3)
     const rm = await roleMap(gid)
 
-    const wrongSeat = await respond(gid, rm.supplier, 2)
-    check(!wrongSeat.ok, 'Supplier cannot act before the signal stage closes')
+    const wrongSeat = await produce(gid, rm.supplier, 2)
+    check(!wrongSeat.ok, 'Supplier cannot act before the message stage closes')
 
-    await signal(gid, rm.retailer, 'up')
-    const tooBig = await respond(gid, rm.supplier, 9)
-    check(!tooBig.ok && /between/.test(tooBig.error ?? ''),
-      'an out-of-range quantity is rejected with the ENGINE\'s message, verbatim')
+    await message(gid, rm.retailer, 'HIGH')
+    const tooBig = await produce(gid, rm.supplier, 9)
+    check(!tooBig.ok && /production of 1, 2, 3 lots/.test(tooBig.error ?? ''),
+      'an out-of-range production is rejected with the ENGINE\'s message, verbatim')
 
-    const twice = await signal(gid, rm.retailer, 'down')
+    const twice = await message(gid, rm.retailer, 'LOW')
     check(!twice.ok, 'a seat cannot submit twice in one stage')
   }
 
@@ -212,7 +212,7 @@ async function main() {
     await seedGroup(gid, PIDS)
     await open(gid, 5)
     const rm = await roleMap(gid)
-    await playRound(gid, rm, 'down', 1)
+    await playRound(gid, rm, 'LOW', 1)
 
     const d = await dash(gid)
     check(d.ok && d.result.groups.length === 1, 'dashboard lists the group')
@@ -249,31 +249,40 @@ async function main() {
     const retailerV = (await sview(gid, rm.retailer)).result.view
     const supplierV  = (await sview(gid, rm.supplier)).result.view
 
-    check('state' in retailerV, '(L) retailer — the INFORMED seat DOES receive the draw')
-    check(retailerV.state === 'up' || retailerV.state === 'down', '(L) retailer — and it is a real value')
+    check('demandType' in retailerV, '(L) retailer — the INFORMED seat DOES receive the demand TYPE')
+    check(['HIGH', 'LOW'].includes(retailerV.demandType), '(L) retailer — and it is a real value')
+    // The Retailer knows the TYPE, never the realisation (spec §1.2).
+    check(!('actualDemand' in retailerV),
+      '(L) retailer — but NOT actual demand: the type, never the realisation')
 
-    check(!('state' in supplierV), '(L) supplier — payload has NO `state` key at all (absence, not null)')
-    check(!Object.keys(supplierV).some((k) => /state|draw|truth|secret/i.test(k) && k !== 'status'),
+    check(!('demandType' in supplierV), '(L) supplier — NO demandType key at all (absence, not null)')
+    check(!('actualDemand' in supplierV), '(L) supplier — NO actualDemand key either')
+    check(!Object.keys(supplierV).some((k) => /demand|actual|truth|secret/i.test(k)),
       '(L) supplier — no key on the payload hints at the hidden draw under any name')
-    check(JSON.stringify(supplierV).indexOf('state_draw') === -1,
+    check(!/demand_type|actual_demand/.test(JSON.stringify(supplierV)),
       '(L) supplier — the engine\'s field name appears nowhere in the serialised payload')
 
     // Mid-round: Supplier acts, still uninformed.
-    await signal(gid, rm.retailer, 'up')
+    await message(gid, rm.retailer, 'HIGH')
     const supplierMid = (await sview(gid, rm.supplier)).result.view
-    check(!('state' in supplierMid), '(L) supplier — still no `state` key while deciding')
-    check(supplierMid.currentSignal === 'up', '(L) supplier — DOES see the signal (that is the observed stage)')
+    check(!('demandType' in supplierMid) && !('actualDemand' in supplierMid),
+      '(L) supplier — still NEITHER field while committing production')
+    check(supplierMid.currentMessage === 'HIGH',
+      '(L) supplier — DOES see the message (that is the observed stage)')
 
     // After resolution: public to everyone, via history.
-    await respond(gid, rm.supplier, 3)
+    await produce(gid, rm.supplier, 3)
     const supplierAfter = (await sview(gid, rm.supplier)).result.view
     check(supplierAfter.history.length === 1, '(L) the round resolved')
-    check(['up', 'down'].includes(supplierAfter.history[0].state),
-      '(L) the truth is public in HISTORY once the round is over — privacy is within a round')
+    check(['HIGH', 'LOW'].includes(supplierAfter.history[0].demandType)
+      && [1, 2, 3].includes(supplierAfter.history[0].actualDemand),
+      '(L) BOTH are public in HISTORY once the round is over — privacy is within a round')
+    check(typeof supplierAfter.history[0].truthful === 'boolean',
+      '(L) and the round records whether the message was truthful (the Tier-3 series)')
 
     // Instructor surfaces are leak surfaces too — the dashboard is projected.
     const d = (await dash(gid)).result
-    check(!JSON.stringify(d).includes('state_draw'),
+    check(!/demand_type|actual_demand/.test(JSON.stringify(d)),
       '(L) the instructor DASHBOARD carries no hidden round field (it is projected in class)')
 
     // The stored document is the last surface. Rules must deny it BY NAME.
