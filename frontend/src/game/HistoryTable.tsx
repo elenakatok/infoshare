@@ -69,25 +69,29 @@ function sections(viewerRole?: Role) {
 }
 
 /**
- * ⚠ THE EXPLANATION IS RENDERED OUTSIDE THE TABLE, AND THAT IS LOAD-BEARING.
+ * ⚠ RENDERED EXACTLY AS CRISIS RENDERS IT — no wrapper, no width, no breakout.
  *
- * game-ui renders `caption` as a `<tfoot>` cell that inherits the body cells'
- * `white-space: nowrap`. A long caption therefore becomes ONE UNWRAPPABLE LINE that sets
- * the table's minimum width — measured here at 1875px for a two-sentence caption, which
- * inflated all seven columns proportionally (2.1×) and pushed four of them outside the
- * scroll box. It looked exactly like "seven columns don't fit", and it was not: the
- * columns need about 900px. Pass `caption` only something short, or nothing.
+ * This used to sit inside a centred band (`width: min(94vw, 1000px)`, `marginLeft: 50%`,
+ * `transform: translateX(-50%)`), added when I mis-diagnosed a table that was too wide.
+ * The real cause was the caption (see below); the band was an extra change that then
+ * broke narrow windows — it takes the table OUT of the page's normal flow, so at ~570px
+ * the PAGE scrolled sideways instead of the table, and the widget's own scroll container
+ * never became the thing that moved.
  *
- * ⚠ Worth fixing in game-ui — `whiteSpace: 'normal'` on that tfoot cell — but that is a
- * shared package rendering nine live games' tables, so it is Elena's call, not a change
- * to make in passing. Nothing here depends on it.
+ * The shared widget already does the right thing: `overflowX: auto` with `maxWidth: 100%`
+ * scrolls the TABLE inside whatever box it is given. Crisis, PD and Pricing all get that
+ * for free by not wrapping it. So does this now.
  *
- * The band is wider than the student shell (~570px) because seven columns need ~900px.
- * The shared widget's horizontal scroll still handles phones.
+ * ⚠ THE EXPLANATION STAYS OUTSIDE THE TABLE. game-ui renders `caption` as a <tfoot> cell
+ * spanning every column; before v0.28.0 it inherited the body cells' `white-space:
+ * nowrap`, so one long sentence set the table's MINIMUM width — measured at 1875px in a
+ * 1000px box, pushing four of the seven columns out of reach. That is fixed in the shared
+ * widget now, but keeping prose out of the table costs nothing and removes the coupling
+ * entirely.
  */
 export default function HistoryTable({ history, viewerRole }: { history: RoundRecord[]; viewerRole?: Role }) {
   return (
-    <div style={{ width: 'min(94vw, 1000px)', marginLeft: '50%', transform: 'translateX(-50%)' }}>
+    <div>
       <SharedHistoryTable<RoundRecord>
         rows={history}
         sections={sections(viewerRole)}
@@ -101,6 +105,7 @@ export default function HistoryTable({ history, viewerRole }: { history: RoundRe
           Actual Forecast and Customer Demand are what really happened — both players
           see them once the round is over.
           {viewerRole ? ' Your profit column is in bold.' : ''}
+          {' '}On a narrow screen, scroll the table sideways to see all seven columns.
         </p>
       )}
     </div>

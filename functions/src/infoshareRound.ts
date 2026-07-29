@@ -37,7 +37,7 @@ import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { extractStudentOnCallIds, extractInstructorGameId } from '@mygames/game-server'
 import { infoshareGameDef } from './gameDefinition'
-import { settingsFromConfig } from './round/settings'
+import { settingsFromConfig, DEFAULT_ROUND_SETTINGS } from './round/settings'
 import {
   openRoundState, applyAction, expireStage, buildSeatView, reviveState,
   requiredSeats, stageIdOf, toHistoryRows,
@@ -77,7 +77,21 @@ const authHeaderOf = (req: CallableRequest): string | undefined =>
 const CORS = { cors: infoshareGameDef.corsOrigins }
 
 const GROUP_SIZE = infoshareGameDef.composition['player']
-const NUM_ROUNDS_DEFAULT = 3
+/*
+  ⚠ DERIVED, NEVER RETYPED. This was a literal `3` — the PLACEHOLDER game's round count,
+  left behind when slice 1 set the real default to 10. So every infoshare game opened
+  WITHOUT an explicit `num_rounds` config played three rounds instead of ten, and the
+  instructor dashboard read "Round 2 of 3" on a ten-round game.
+
+  It survived because the harnesses all set num_rounds explicitly (the e2e asks for 10),
+  so every test configured its way around the default and none of them ever exercised it.
+  Same shape as the other false greens in this build: the assertion was true of the
+  broken state because the broken path was never taken.
+
+  Deriving it from DEFAULT_ROUND_SETTINGS means there is one number, and changing the
+  game's length cannot leave a second copy behind.
+*/
+const NUM_ROUNDS_DEFAULT = DEFAULT_ROUND_SETTINGS.numRounds
 const STAGE_SECONDS_DEFAULT = 120
 
 /** The collection name. Prefixed by game id so two games never collide. */

@@ -296,6 +296,49 @@ async function main() {
     A screenshot cannot fail. This can.
   */
   console.log(`  history: ${m.cols.length} columns, table ${m.tableW}px in a ${m.wrapW}px box`)
+
+  /*
+    ⚠ THE NARROW VIEWPORT IS THE ONLY CASE THAT CAN FAIL.
+    The earlier assertion measured 1000px of table in a 1000px box — a case that is true
+    by construction and could never have caught Elena's ~570px window, where the table
+    spilled and the PAGE scrolled sideways instead of the table.
+
+    Three things must hold at 570px, and they are different claims:
+      1. the table is WIDER than its box     — otherwise nothing is being tested
+      2. its own container SCROLLS           — scrollWidth > clientWidth, overflowX auto
+      3. the PAGE does not scroll sideways   — document scrollWidth <= innerWidth
+    (3) is the one the breakout div broke: the table moved out of normal flow, so the
+    document grew instead of the container.
+  */
+  await supplier.setViewportSize({ width: 570, height: 1000 })
+  await sleep(500)
+  const n = await supplier.evaluate(() => {
+    const t = document.querySelector('[data-testid="game-history"]')
+    const wrap = t.parentElement
+    return {
+      tableW: Math.round(t.getBoundingClientRect().width),
+      boxClientW: wrap.clientWidth,
+      boxScrollW: wrap.scrollWidth,
+      overflowX: getComputedStyle(wrap).overflowX,
+      docScrollW: document.documentElement.scrollWidth,
+      viewportW: window.innerWidth,
+    }
+  })
+  console.log(`  narrow(570): table ${n.tableW}px, box client ${n.boxClientW}/scroll ${n.boxScrollW} ` +
+    `(overflow-x: ${n.overflowX}), document ${n.docScrollW} vs viewport ${n.viewportW}`)
+  const wider = n.boxScrollW > n.boxClientW
+  const scrolls = n.overflowX === 'auto' || n.overflowX === 'scroll'
+  const pageStill = n.docScrollW <= n.viewportW + 1
+  console.log(wider ? '  ✓ at 570px the table overflows its box (the case that can fail)'
+                    : '  ✗ at 570px nothing overflows — the assertion is vacuous')
+  console.log(scrolls ? '  ✓ and its own container scrolls horizontally'
+                      : `  ✗ the container does not scroll (overflow-x: ${n.overflowX})`)
+  console.log(pageStill ? '  ✓ and the PAGE does not scroll sideways'
+                        : `  ✗ the PAGE scrolls sideways (${n.docScrollW} > ${n.viewportW})`)
+  if (!(wider && scrolls && pageStill)) process.exitCode = 1
+  await supplier.screenshot({ path: path.join(OUT, '17-history-570px.png'), fullPage: false })
+  console.log('  ✓ 17-history-570px.png')
+  await supplier.setViewportSize({ width: 1100, height: Number(process.env.VH) || 1250 })
   if (m.cols.length !== 7) {
     console.log(`  ✗ the history table has ${m.cols.length} columns, not the seven in spec §1.2`)
     process.exitCode = 1
