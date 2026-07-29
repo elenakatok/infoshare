@@ -340,26 +340,56 @@ async function main() {
     const sizes = formed.map((g) => Object.values(g.participants_by_role ?? {}).flat().length)
     check(sizes.every((n) => n === 2), `(M2) every group has exactly 2 seats (got ${sizes.join(',')})`)
 
-    // (M3) THE REFUSAL: one student, two seats. Refusing is CORRECT — what matters is
-    // that it refuses with a TYPED, READABLE error rather than an opaque one. An
-    // instructor who sees "internal" has nothing to act on; "not enough participants"
-    // tells them to wait for someone else to arrive.
+    /*
+      (M3) ONE STUDENT, TWO SEATS — AND THE ANSWER CHANGED IN SLICE 3.
+      ⚠ THIS TEST USED TO ASSERT A REFUSAL, and it was right to until `triggerMatching`
+      became chained (matchWithBots.ts). With two-seat groups an odd class ALWAYS leaves
+      exactly one student, so refusing meant that student had no group and no game —
+      which is precisely the hole the server bot runner exists to fill.
+
+      Matching now forms the full human groups and then bot-fills the remainder, so a
+      lone student is PAIRED WITH A ROBOT rather than turned away. The old assertion
+      failing is the correct signal that the contract moved; it is updated here rather
+      than deleted, so the new contract is the thing under test.
+
+      The lone student is not "present" in this seeded fixture, so the remainder fill
+      finds nobody eligible and reports so — a no-op, not an error. That distinction is
+      what this now asserts: matching must SUCCEED and say what it did.
+    */
     const lone = 'matchpath-lone'
     await seedRoster(lone, ['solo'])
     const r = await matchNow(lone)
-    check(!r.ok, '(M3) one student cannot form a group of two — correctly refused')
-    check(/not enough participants/i.test(r.error ?? ''),
-      `(M3) and the refusal is READABLE, not "internal" — got: ${r.error}`)
-    check(!/^internal$/i.test(r.error ?? ''), '(M3) the refusal is not the generic wrapper')
+    check(r.ok, `(M3) matching a lone student no longer refuses — it bot-fills (${r.error ?? 'ok'})`)
+    check(!/^internal$/i.test(r.error ?? ''), '(M3) and never returns the generic "internal" wrapper')
+    check(r.ok && r.result?.remainder !== undefined,
+      '(M3) the chained result reports what the remainder fill did')
   }
 
   // ── (E) the spawn gates ──────────────────────────────────────────────────────
   banner('(E) spawn hygiene')
   {
+    /*
+      ⚠ THE SWEEP MUST REACH OUTSIDE src/. It used to grep only functions/src and
+      frontend/src, and a spawned game shipped with `<title>Crisis</title>` in
+      frontend/index.html — students saw another game's name in their browser tab, and
+      the gate that exists to catch exactly this reported zero markers because it never
+      looked at the file.
+
+      index.html, the rules files and firebase.json all sit outside src/ and all carry
+      identity. Anything that names the game belongs in this list; when in doubt, add it
+      — a false positive costs one edit, a miss ships another game's name to students.
+    */
+    const SWEPT = [
+      `${ROOT}/functions/src`,
+      `${ROOT}/frontend/src`,
+      `${ROOT}/frontend/index.html`,
+      `${ROOT}/firestore.rules`,
+      `${ROOT}/firebase.json`,
+    ].join(' ')
     const countIn = (marker) => {
       try {
         return Number(execSync(
-          `grep -rl "${marker}" ${ROOT}/functions/src ${ROOT}/frontend/src | wc -l`,
+          `grep -rl "${marker}" ${SWEPT} 2>/dev/null | wc -l`,
         ).toString().trim())
       } catch { return 0 }   // grep exits 1 when nothing matches
     }
