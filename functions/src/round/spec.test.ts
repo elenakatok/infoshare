@@ -10,6 +10,7 @@ import {
 } from './resolver'
 import { makeGameSpec, drawLots, FIELD_DEMAND_TYPE, FIELD_ACTUAL_DEMAND, STAGE_MESSAGE, STAGE_PRODUCTION } from './spec'
 import { decide } from './decide'
+import { openRoundState } from './machine'
 import { DEFAULT_ROUND_SETTINGS, type DemandType, type Lots } from './settings'
 import { openGame, submit, buildSeatView, assertValidStageGameSpec, makeRng } from '@mygames/stage-engine'
 
@@ -489,5 +490,55 @@ describe('the pair is self-correcting', () => {
     expect(log[3].said).toBe('HIGH')
     // Which is exactly the assertion the real loop test makes, now failing:
     expect(log[3]).not.toEqual({ said: 'LOW', made: 1 })
+  })
+})
+
+// ── the default round count ────────────────────────────────────────────────────
+
+describe('a game opened with NO instance config', () => {
+  /**
+   * ⚠ THE DEFAULT PATH IS THE ONE NOTHING EVER EXERCISED.
+   *
+   * `NUM_ROUNDS_DEFAULT` in infoshareRound.ts sat at 3 — the placeholder's count — from
+   * slice 1 until Elena saw "Round 2 of 3" on a live dashboard. Every harness in the
+   * repo sets `num_rounds` explicitly (the e2e asks for 10), so all of them configured
+   * their way PAST the default and none of them ever opened a game without one. The
+   * broken path was never taken, so every assertion about it was vacuously true.
+   *
+   * This test opens a game the way production does when an instructor changes nothing:
+   * `settingsFromConfig(undefined)`. If the two defaults ever drift apart again, this
+   * fails instead of a class playing three rounds.
+   */
+  it('plays the full default number of rounds, not the placeholder count', () => {
+    const settings = settingsFromConfig(undefined)
+    expect(settings.numRounds).toBe(10)
+
+    const state = openRoundState([0, 1], 1234, settings.numRounds, settings)
+    // The horizon is what the dashboard and the student header both read.
+    expect(state.horizonBySeat[0]).toBe(10)
+    expect(state.horizonBySeat[1]).toBe(10)
+  })
+
+  /**
+   * ⚠ THIS IS THE ASSERTION THAT WOULD ACTUALLY HAVE CAUGHT IT.
+   *
+   * The bug was NOT in DEFAULT_ROUND_SETTINGS — that said 10 all along. It was a SECOND
+   * copy of the number, `NUM_ROUNDS_DEFAULT` in infoshareRound.ts, which is what
+   * openRoundCore reads when an instance has no config. Asserting the settings default
+   * alone would have passed throughout the entire period the bug was live.
+   *
+   * So assert the two agree. They are now one expression, but this is what fails if
+   * anyone re-types the literal.
+   */
+  it('the round-opening default is the SAME number as the settings default', async () => {
+    const { NUM_ROUNDS_DEFAULT } = await import('../infoshareRound')
+    expect(NUM_ROUNDS_DEFAULT).toBe(DEFAULT_ROUND_SETTINGS.numRounds)
+    expect(NUM_ROUNDS_DEFAULT).toBe(10)
+  })
+
+  it('the spec built from an unconfigured instance carries the same count', () => {
+    const settings = settingsFromConfig(undefined)
+    const spec = makeGameSpec({ settings })
+    expect(spec.roundCount).toMatchObject({ mode: 'fixed', n: 10 })
   })
 })

@@ -91,7 +91,7 @@ const GROUP_SIZE = infoshareGameDef.composition['player']
   Deriving it from DEFAULT_ROUND_SETTINGS means there is one number, and changing the
   game's length cannot leave a second copy behind.
 */
-const NUM_ROUNDS_DEFAULT = DEFAULT_ROUND_SETTINGS.numRounds
+export const NUM_ROUNDS_DEFAULT = DEFAULT_ROUND_SETTINGS.numRounds
 const STAGE_SECONDS_DEFAULT = 120
 
 /** The collection name. Prefixed by game id so two games never collide. */
