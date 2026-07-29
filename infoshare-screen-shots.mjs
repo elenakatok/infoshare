@@ -216,6 +216,40 @@ async function main() {
   await sleep(1200)
   await shot(retailer, '10-retailer-decision')
 
+  /*
+    ⚠ THE SHELL MUST FILL THE WINDOW AT ANY WIDTH.
+    Elena's 1980px window showed the dark GameHeader bar stopping at ~930px with a
+    scrollbar at that edge and white beyond — the whole student page sitting in a
+    container that does not grow. Measured, not photographed: the header's own width
+    against the viewport, and the document against the viewport in both directions.
+  */
+  for (const w of [1980, 570]) {
+    await retailer.setViewportSize({ width: w, height: 900 })
+    await sleep(700)
+    const L = await retailer.evaluate(() => {
+      const hdr = document.querySelector('header') ?? document.querySelector('[data-testid="game-header"]')
+      const de = document.documentElement
+      return {
+        headerW: hdr ? Math.round(hdr.getBoundingClientRect().width) : null,
+        bodyW: Math.round(document.body.getBoundingClientRect().width),
+        rootW: Math.round((document.getElementById('root') ?? document.body).getBoundingClientRect().width),
+        docScrollW: de.scrollWidth,
+        viewportW: window.innerWidth,
+      }
+    })
+    console.log(`  layout@${w}: header ${L.headerW} · root ${L.rootW} · body ${L.bodyW} · ` +
+      `document ${L.docScrollW} vs viewport ${L.viewportW}`)
+    const spans = L.headerW !== null && Math.abs(L.headerW - L.viewportW) <= 2
+    const noSideScroll = L.docScrollW <= L.viewportW + 1
+    console.log(spans ? `  ✓ @${w} the header bar spans the full viewport`
+                      : `  ✗ @${w} the header is ${L.headerW}px in a ${L.viewportW}px window`)
+    console.log(noSideScroll ? `  ✓ @${w} the page does not scroll sideways`
+                             : `  ✗ @${w} the page scrolls sideways (${L.docScrollW} > ${L.viewportW})`)
+    if (!spans || !noSideScroll) process.exitCode = 1
+  }
+  await retailer.setViewportSize({ width: 1100, height: 1250 })
+  await sleep(400)
+
   // ── 2. THE INFORMATION PANEL, from the Retailer's screen ─────────────────────
   // ⚠ It is OPEN ALREADY in round 1 — clicking the toggle here would CLOSE it and the
   // assertion below would then fail on a page that is behaving exactly as designed.
