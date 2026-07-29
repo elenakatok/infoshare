@@ -64,6 +64,25 @@ async function main() {
 
   const browser = await chromium.launch({ headless: false })
   const dash = await browser.newPage({ viewport: { width: 1400, height: 1000 } })
+
+  /*
+    ⚠ ONE PERSISTENT DIALOG HANDLER, NOT `once`, AND REGISTERED BEFORE ANY CLICK.
+
+    Playwright AUTO-DISMISSES dialogs when nothing is listening — it does not block, it
+    cancels. So an unhandled window.confirm turns a button press into a silent no-op that
+    looks identical to success from the outside.
+
+    This was `dash.once(...)`, which fires exactly once and was consumed by Start class.
+    Score & Record then hit its own confirm ("Finalize and push scores? … This is
+    irreversible.") with no listener left, Playwright cancelled it, scoreAndRecord was
+    never called, and the gate still reported "✓ Score & Record clicked" — true of both
+    the working and the broken case.
+
+    The instructor dashboard has THREE confirms (start class, and two finalize variants),
+    so a handler that survives all of them is the only correct shape.
+  */
+  const dialogs = []
+  dash.on('dialog', (d) => { dialogs.push(d.message()); d.accept().catch(() => {}) })
   await dash.goto(body.url, { waitUntil: 'domcontentloaded' })
   await sleep(4000)
 
@@ -98,7 +117,6 @@ async function main() {
   check(matched, 'Match Now clicked on the real dashboard')
   await sleep(6000)
 
-  dash.once('dialog', (d) => d.accept())   // Start class asks for confirmation
   const started = await clickByText(dash, /start class|start the class|start all/i, { timeout: 15000 })
   check(started, 'Start class clicked on the real dashboard')
   await sleep(5000)
@@ -131,7 +149,40 @@ async function main() {
   banner('SCORE & RECORD — the gradebook push')
   const scored = await clickByText(dash, /score.*record|finalize|push/i, { timeout: 15000 })
   check(scored, 'Score & Record clicked')
-  await sleep(8000)
+  await sleep(12000)
+
+  /*
+    ⚠ THE CLICK IS NOT THE ASSERTION. THE LANDED RECORD IS.
+
+    "Score & Record clicked" is true whether or not anything reached the classroom — the
+    seventh time that shape has bitten this build. So read the gradebook itself, in the
+    CLASSROOM project, and require records for THIS instance.
+
+    Read via the launcher's node_modules because that is where firebase-admin and the
+    application-default credentials already resolve; the game repo has neither.
+  */
+  const adminReq = createRequire('/Users/emk120030/projects/games-platform/classroom/tools/launcher/x.mjs')
+  const admin = adminReq('firebase-admin')
+  const app = admin.initializeApp(
+    { credential: admin.credential.applicationDefault(), projectId: 'mygames-classroom-aec1b' },
+    `gate-${Date.now()}`)
+  let landed = []
+  for (let i = 0; i < 10 && landed.length === 0; i++) {
+    const snap = await app.firestore().collection('game_results')
+      .where('game_instance_id', '==', INSTANCE).get()
+    landed = snap.docs.map((d) => d.data())
+    if (landed.length === 0) await sleep(3000)
+  }
+  check(landed.length > 0,
+    `⚠ GRADEBOOK RECORDS LANDED IN THE CLASSROOM for ${INSTANCE} — ${landed.length} record(s)`)
+  check(landed.every((r) => typeof r.normalized_score === 'number'),
+    'every landed record carries a normalized score')
+  check(landed.every((r) => !String(r.participant_id).startsWith('bot_')),
+    'no bot appears in the gradebook')
+  console.log(`  dialogs accepted during the run: ${dialogs.length}` +
+    (dialogs.length ? ` — ${dialogs.map((m) => JSON.stringify(m.slice(0, 40))).join('; ')}` : ''))
+  check(dialogs.length >= 2,
+    `at least two confirms were ACCEPTED (start + finalize) — got ${dialogs.length}`)
 
   await dash.screenshot({ path: path.join(ROOT, 'report-shots', '20-browser-gate-dashboard.png'), fullPage: true })
   console.log('  ✓ 20-browser-gate-dashboard.png')
