@@ -10,7 +10,7 @@ import {
 } from './resolver'
 import { makeGameSpec, drawLots, FIELD_DEMAND_TYPE, FIELD_ACTUAL_DEMAND, STAGE_MESSAGE, STAGE_PRODUCTION } from './spec'
 import { decide } from './decide'
-import { DEFAULT_ROUND_SETTINGS } from './settings'
+import { DEFAULT_ROUND_SETTINGS, type DemandType, type Lots } from './settings'
 import { openGame, submit, buildSeatView, assertValidStageGameSpec, makeRng } from '@mygames/stage-engine'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -308,54 +308,186 @@ describe('timeout defaults — spec §6.1, invoked by the engine', () => {
   })
 })
 
-// ── the bot brain ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE BOT STRATEGIES (spec §7.1).
+//
+// ⚠ THESE TEST WHAT THE BOTS DO, NOT THAT THEY RETURN A LEGAL VALUE. The strategies
+// ARE the deliverable of this slice; a suite that only checked the action type-checks
+// would pass against a bot that reported at random, which is precisely the placeholder
+// this replaced.
+// ═══════════════════════════════════════════════════════════════════════════════
 
-describe('decide', () => {
-  const V = (over: Record<string, unknown>) => ({
-    seat: 0, role: 'retailer', status: 'in_progress', round: 1, numRounds: 10,
-    stage: 'message', owes: 'message', currentMessage: null, history: [], pendingCount: 1,
-    ...over,
-  }) as never
+const K = DEFAULT_ROUND_SETTINGS.botPunishmentRounds
 
-  it('is deterministic — same view, same action', () => {
-    const v = V({ demandType: 'LOW' })
-    expect(decide(v, DEFAULT_ROUND_SETTINGS)).toEqual(decide(v, DEFAULT_ROUND_SETTINGS))
+/** One completed round, as the seat view carries it. */
+const rec = (round: number, message: DemandType, demandType: DemandType, production: Lots) => ({
+  round, retailerSeat: 0, supplierSeat: 1,
+  message, production, demandType,
+  actualDemand: 2 as Lots, sales: 2,
+  profits: { retailer: 2, supplier: 2 },
+  truthful: message === demandType,
+  defaulted: { retailer: false, supplier: false },
+})
+
+const retailerView = (demandType: DemandType, history: ReturnType<typeof rec>[]) => ({
+  seat: 0, role: 'retailer', status: 'in_progress', round: history.length + 1,
+  numRounds: 10, stage: 'message', owes: 'message', currentMessage: null,
+  demandType, history, pendingCount: 1,
+}) as never
+
+const supplierView = (currentMessage: DemandType, history: ReturnType<typeof rec>[]) => ({
+  seat: 1, role: 'supplier', status: 'in_progress', round: history.length + 1,
+  numRounds: 10, stage: 'production', owes: 'production', currentMessage,
+  history, pendingCount: 1,
+}) as never
+
+const report = (v: never) => (decide(v, DEFAULT_ROUND_SETTINGS) as { message: DemandType }).message
+const produce = (v: never) => (decide(v, DEFAULT_ROUND_SETTINGS) as { production: Lots }).production
+
+describe('retailer bot — reciprocator (§7.1)', () => {
+  it('reports HIGH when the type is HIGH, always — whatever the supplier has done', () => {
+    // Truthful and self-interested coincide here, so this must hold even in the state
+    // where the bot has given up on LOW entirely.
+    expect(report(retailerView('HIGH', []))).toBe('HIGH')
+    expect(report(retailerView('HIGH', [rec(1, 'HIGH', 'HIGH', 1)]))).toBe('HIGH')
+    expect(report(retailerView('HIGH', [rec(1, 'HIGH', 'LOW', 2), rec(2, 'HIGH', 'HIGH', 2)]))).toBe('HIGH')
   })
 
-  it('never misreports a HIGH draw — there is never a reason to', () => {
-    for (let round = 1; round <= 200; round++) {
-      const a = decide(V({ round, demandType: 'HIGH' }), DEFAULT_ROUND_SETTINGS)
-      expect(a).toEqual({ kind: 'message', message: 'HIGH' })
-    }
+  it('tells the truth about LOW while the supplier rewards HIGH with 3', () => {
+    expect(report(retailerView('LOW', [rec(1, 'HIGH', 'HIGH', 3)]))).toBe('LOW')
+    expect(report(retailerView('LOW', [
+      rec(1, 'HIGH', 'HIGH', 3), rec(2, 'LOW', 'LOW', 1), rec(3, 'HIGH', 'HIGH', 3),
+    ]))).toBe('LOW')
   })
 
-  it('misreports LOW sometimes but not usually — a saint bot is the wrong partner', () => {
-    let lies = 0
-    for (let round = 1; round <= 200; round++) {
-      const a = decide(V({ round, demandType: 'LOW' }), DEFAULT_ROUND_SETTINGS) as { message: string }
-      if (a.message === 'HIGH') lies++
-    }
-    // Both bounds matter: 0 would mean a provably honest partner, and a majority would
-    // mean the report carried no information at all.
-    expect(lies).toBeGreaterThan(0)
-    expect(lies).toBeLessThan(100)
+  it('starts truthful — with no HIGH report yet there is nothing to reciprocate to', () => {
+    expect(report(retailerView('LOW', []))).toBe('LOW')
+    // A history of LOW-only rounds still carries no evidence about HIGH.
+    expect(report(retailerView('LOW', [rec(1, 'LOW', 'LOW', 1), rec(2, 'LOW', 'LOW', 1)]))).toBe('LOW')
+  })
+
+  it('switches to always-HIGH once the supplier stops producing 3 after HIGH', () => {
+    expect(report(retailerView('LOW', [rec(1, 'HIGH', 'HIGH', 2)]))).toBe('HIGH')
+    expect(report(retailerView('LOW', [rec(1, 'HIGH', 'HIGH', 3), rec(2, 'HIGH', 'HIGH', 2)]))).toBe('HIGH')
   })
 
   /**
-   * ⚠ THE PEEK TEST. The server bot runs where nothing is on the wire, so no leak
-   * assertion in any harness can catch a bot that reads the true type in the Supplier's
-   * branch. This is the only place it is checked: the view handed in has NO demandType
-   * key at all, and the action must still be decided from currentMessage.
+   * ⚠ THE TRIGGER WATCHES HIGH ONLY. Production after a LOW report carries no
+   * information — 1 after LOW is the Supplier's permanent, correct behaviour, not a
+   * punishment. A bot that read it as one would defect against a partner who had done
+   * nothing wrong, in the exact rounds where honesty was being rewarded.
    */
-  it('the supplier branch decides from the report alone', () => {
-    const high = decide(V({ role: 'supplier', seat: 1, owes: 'production', currentMessage: 'HIGH' }), DEFAULT_ROUND_SETTINGS)
-    const low = decide(V({ role: 'supplier', seat: 1, owes: 'production', currentMessage: 'LOW' }), DEFAULT_ROUND_SETTINGS)
-    expect(high).toEqual({ kind: 'production', production: 3 })
-    expect(low).toEqual({ kind: 'production', production: 1 })
+  it('ignores production after a LOW report — 1 after LOW is not a punishment', () => {
+    expect(report(retailerView('LOW', [rec(1, 'HIGH', 'HIGH', 3), rec(2, 'LOW', 'LOW', 1)]))).toBe('LOW')
+  })
+})
+
+describe('supplier bot — trusting (§7.1)', () => {
+  it('produces 3 after HIGH and 1 after LOW while HIGH reports have been honest', () => {
+    expect(produce(supplierView('HIGH', []))).toBe(3)
+    expect(produce(supplierView('LOW', []))).toBe(1)
+    expect(produce(supplierView('HIGH', [rec(1, 'HIGH', 'HIGH', 3)]))).toBe(3)
   })
 
-  it('refuses to guess a report when the retailer cannot see the draw', () => {
-    // Absence, not null — the shape a broken reveal would actually produce.
-    expect(() => decide(V({}), DEFAULT_ROUND_SETTINGS)).toThrow(/cannot see demandType/)
+  it(`produces 2 after HIGH for exactly k=${K} round(s) after being lied to, then re-tests with 3`, () => {
+    const lie = [rec(1, 'HIGH', 'LOW', 3)]          // reported HIGH, truth was LOW
+    // The k punished rounds.
+    let h = [...lie]
+    for (let i = 0; i < K; i++) {
+      expect(produce(supplierView('HIGH', h))).toBe(2)
+      h = [...h, rec(h.length + 1, 'HIGH', 'HIGH', 2)]
+    }
+    // …and then the RE-TEST. Without this the punishment is permanent and the pair
+    // locks into mutual defection for the rest of the run.
+    expect(produce(supplierView('HIGH', h))).toBe(3)
+  })
+
+  it('never changes production after LOW — not even mid-punishment', () => {
+    expect(produce(supplierView('LOW', [rec(1, 'HIGH', 'LOW', 3)]))).toBe(1)
+  })
+
+  it('does not treat an honest HIGH as a lie', () => {
+    expect(produce(supplierView('HIGH', [rec(1, 'HIGH', 'HIGH', 3), rec(2, 'LOW', 'LOW', 1)]))).toBe(3)
+  })
+})
+
+/**
+ * THE SELF-CORRECTING LOOP (§7.1) — the reason neither bot needs a forgiveness timer.
+ *
+ * Retailer lies → Supplier punishes → punishment ends at the re-test → Retailer sees 3
+ * after HIGH again → Retailer resumes telling the truth. This is the property that makes
+ * `k` the only tuning parameter in the system, and no single-bot test can show it: it is
+ * a claim about the PAIR.
+ */
+describe('the pair is self-correcting', () => {
+  /**
+   * lie → punish → re-test → recover, driven ONLY by the two decide() branches.
+   *
+   * ⚠ THE TRUTHS MUST INCLUDE HIGH ROUNDS, and the first version of this test did not.
+   * The Supplier's punishment is only ever EXPRESSED on a HIGH report. With an all-LOW
+   * run the Retailer lies once, immediately reverts to the truth, and no HIGH report
+   * ever arrives — so the punishment never becomes visible and the loop never turns.
+   * The test failed, the code was right, and the scenario was the bug.
+   *
+   * Seeded with one round where a HIGH report earned only 2, which is what puts the
+   * Retailer in the "HIGH is worth nothing" state and makes it lie in round 2.
+   */
+  it('lie → punish → re-test → recover', () => {
+    const history = [rec(1, 'HIGH', 'HIGH', 2)]
+    const truths: DemandType[] = ['LOW', 'HIGH', 'HIGH', 'LOW']
+    const log: { round: number; truth: DemandType; said: DemandType; made: Lots }[] = []
+
+    truths.forEach((truth, i) => {
+      const round = i + 2
+      const said = report(retailerView(truth, history))
+      const made = produce(supplierView(said, history))
+      log.push({ round, truth, said, made })
+      history.push(rec(round, said, truth, made))
+    })
+
+    // r2 — THE LIE. The supplier has not been lied to yet, so it still trusts.
+    expect(log[0]).toEqual({ round: 2, truth: 'LOW', said: 'HIGH', made: 3 })
+    // r3 — THE PUNISHMENT. The lie is now in history; HIGH earns 2 instead of 3.
+    expect(log[1]).toEqual({ round: 3, truth: 'HIGH', said: 'HIGH', made: 2 })
+    // r4 — THE RE-TEST, after exactly k=1 punished round. Trust offered again.
+    expect(log[2]).toEqual({ round: 4, truth: 'HIGH', said: 'HIGH', made: 3 })
+    // r5 — RECOVERY. The retailer sees 3 after HIGH and tells the truth about LOW again,
+    // at a cost to itself. This is the round the whole design exists to produce.
+    expect(log[3]).toEqual({ round: 5, truth: 'LOW', said: 'LOW', made: 1 })
+  })
+
+  /**
+   * ⚠ NEGATIVE CONTROL — the loop assertion must be capable of FAILING.
+   *
+   * Three self-caught false greens in this build shared one property: the assertion was
+   * equally true of the broken state. So break the strategy deliberately — a Supplier
+   * that never re-tests, the single most plausible way to get §7.1 wrong — and require
+   * the recovery round to disappear. If this ever passes, the loop test above is
+   * decoration.
+   */
+  it('NEGATIVE CONTROL: a supplier that never re-tests breaks recovery', () => {
+    const neverRetests = (report_: DemandType, history: ReturnType<typeof rec>[]): Lots => {
+      if (report_ === 'LOW') return 1
+      const liedTo = history.some((h) => h.message === 'HIGH' && h.demandType === 'LOW')
+      return liedTo ? 2 : 3          // punishes forever — no re-test
+    }
+
+    const history = [rec(1, 'HIGH', 'HIGH', 2)]
+    const truths: DemandType[] = ['LOW', 'HIGH', 'HIGH', 'LOW']
+    const log: { said: DemandType; made: Lots }[] = []
+
+    truths.forEach((truth, i) => {
+      const said = report(retailerView(truth, history))
+      const made = neverRetests(said, history)
+      log.push({ said, made })
+      history.push(rec(i + 2, said, truth, made))
+    })
+
+    // The re-test never comes, so the retailer never sees 3 after HIGH again…
+    expect(log.slice(1).every((l) => l.made !== 3)).toBe(true)
+    // …and the final LOW round is a LIE, not the recovery the real pair produces.
+    expect(log[3].said).toBe('HIGH')
+    // Which is exactly the assertion the real loop test makes, now failing:
+    expect(log[3]).not.toEqual({ said: 'LOW', made: 1 })
   })
 })

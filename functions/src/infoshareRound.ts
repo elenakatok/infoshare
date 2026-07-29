@@ -45,6 +45,32 @@ import {
 } from './round/machine'
 import { STAGE_MESSAGE, STAGE_PRODUCTION, type SeatAction } from './round/spec'
 
+/**
+ * THE THREE PLACES A BOT CAN COME TO OWE SOMETHING, and all three run the bots:
+ *
+ *   1. a round OPENS            → the Retailer seat owes a message
+ *   2. a human SUBMITS          → their action closes a stage and opens the next
+ *   3. a seat POLLS getRoundView → the backstop, for anything the first two missed
+ *
+ * ⚠ (3) IS NOT REDUNDANT. Without it, a bot that failed to act for any reason — a
+ * transient Firestore error, a deploy mid-round — is never retried, and the group sits
+ * until the clock defaults the bot. In ONLINE mode there is no clock at all, so it would
+ * sit forever. The polling backstop is the only thing that makes a bot seat recoverable.
+ *
+ * ⚠ QUIETLY: a bot failure must never fail the human's request. The student pressed a
+ * button and their action succeeded; turning that into a red error because the robot
+ * opposite them had a bad moment is strictly worse than the group being a beat slow, and
+ * the backstop will pick it up on the next poll anyway.
+ */
+async function runBotsQuietly(iid: string, groupId: string, clockNow: number): Promise<void> {
+  try {
+    const { runBotActions } = await import('./botRunner')
+    await runBotActions(iid, groupId, clockNow)
+  } catch (e) {
+    console.error('[infoshare] bot pass failed', { iid, groupId, error: String(e) })
+  }
+}
+
 const isEmu = () => process.env.FUNCTIONS_EMULATOR === 'true'
 const authHeaderOf = (req: CallableRequest): string | undefined =>
   req.rawRequest.headers.authorization as string | undefined
@@ -81,7 +107,7 @@ function hashString(str: string): number {
   return h >>> 0
 }
 
-const stateDoc = (iid: string, groupId: string) =>
+export const stateDoc = (iid: string, groupId: string) =>
   admin.firestore().collection('game_instances').doc(iid).collection(ROUND_COLLECTION).doc(groupId)
 
 interface StoredDoc {
@@ -105,7 +131,7 @@ interface StoredDoc {
  * flattens to strings. Skip it and `roleBySeat[0]` is undefined after a round trip, a
  * seat silently has no role, and nothing type-errors. Every read goes through here.
  */
-function readStored(data: unknown): StoredDoc {
+export function readStored(data: unknown): StoredDoc {
   const stored = data as StoredDoc
   if (!stored) throw new HttpsError('not-found', 'This group has not started yet.')
   return { ...stored, state: reviveState(stored.state) }
@@ -128,7 +154,7 @@ function storedPayload(stored: StoredDoc, state: RoundState, deadlineMs: number 
   }
 }
 
-async function settingsFor(iid: string) {
+export async function settingsFor(iid: string) {
   const snap = await admin.firestore()
     .collection('game_instances').doc(iid).collection('config').doc('main').get()
   return settingsFromConfig(snap.data() as Record<string, unknown> | undefined)
@@ -190,6 +216,10 @@ export async function openRoundCore(
   } else {
     await ref.set(payload)
   }
+  // (1) A ROUND HAS OPENED — the Retailer seat now owes a message, and it may be a bot.
+  // Running here is what lets a bot-Retailer act before any human has done anything;
+  // without it the very first stage of every round waits on the clock.
+  await runBotsQuietly(iid, groupId, opts.nowMs)
   return { ok: true as const, round: state.round, stage: stageIdOf(state), clockEnabled }
 }
 
@@ -269,9 +299,25 @@ async function maybeAutoOpen(iid: string, groupId: string, participantId: string
  * this, and a bot runner calls it directly. One code path, so a bot can never diverge
  * from what a human's action does.
  */
-export async function applySeatAction(
-  iid: string, groupId: string, seat: number, action: SeatAction, clockNow: number,
-): Promise<{ ok: boolean; reason?: string; stageClosed: boolean; finished: boolean }> {
+/**
+ * Apply an action whose VALUE IS DECIDED INSIDE THE TRANSACTION, from the state the
+ * transaction read.
+ *
+ * ⚠ THIS IS THE FORM THE BOT RUNNER NEEDS, and the reason is not style. A bot that
+ * decided its action from a read taken BEFORE the transaction could have the state move
+ * underneath it — the stage closes, and an action chosen for stage 1 arrives at stage 2.
+ * The engine would reject it, but relying on "our own bug gets rejected downstream" is
+ * not a design. Deciding from the transactional read means the situation cannot arise.
+ *
+ * `build` returns null when the seat owes nothing right now. That is a NO-OP, not a
+ * failure: it is exactly what a second bot pass sees, and it is what makes the runner
+ * idempotent without a "have I run already?" flag to get out of step.
+ */
+export async function applySeatActionBuilt(
+  iid: string, groupId: string, seat: number,
+  build: (state: RoundState) => SeatAction | null,
+  clockNow: number,
+): Promise<{ ok: boolean; reason?: string; skipped?: boolean; stageClosed: boolean; finished: boolean }> {
   const settings = await settingsFor(iid)
   const ref = stateDoc(iid, groupId)
 
@@ -288,6 +334,11 @@ export async function applySeatAction(
       state = expireStage(state, settings).state
     }
 
+    const action = build(state)
+    if (action === null) {
+      return { ok: true, skipped: true, stageClosed: false, finished: state.status !== 'in_progress' }
+    }
+
     const r = applyAction(state, seat, action, settings)
     if (!r.ok) return { ok: false, reason: r.reason, stageClosed: false, finished: false }
 
@@ -295,6 +346,14 @@ export async function applySeatAction(
     tx.set(ref, storedPayload(stored, r.state, r.finished ? null : deadline))
     return { ok: true, stageClosed: r.stageClosed, finished: r.finished }
   })
+}
+
+/** The human path: a concrete action, chosen by a person who already saw the screen. */
+export async function applySeatAction(
+  iid: string, groupId: string, seat: number, action: SeatAction, clockNow: number,
+): Promise<{ ok: boolean; reason?: string; stageClosed: boolean; finished: boolean }> {
+  const r = await applySeatActionBuilt(iid, groupId, seat, () => action, clockNow)
+  return { ok: r.ok, reason: r.reason, stageClosed: r.stageClosed, finished: r.finished }
 }
 
 /** Resolve a student's identity to a seat in their own group. */
@@ -331,6 +390,10 @@ const submitStage = (stage: typeof STAGE_MESSAGE | typeof STAGE_PRODUCTION) =>
       : { kind: 'production', production: Number(data['production']) as never }
     const r = await applySeatAction(iid, groupId, seat, action, nowMs(data))
     if (!r.ok) throw new HttpsError('failed-precondition', r.reason ?? 'Rejected.')
+    // A human's action can hand the next stage straight to a bot. Run bots here so the
+    // group moves on immediately instead of waiting out the clock on a seat that is
+    // sitting right there — see the three call sites note above runBotActions.
+    await runBotsQuietly(iid, groupId, nowMs(data))
     return r
   })
 
@@ -395,6 +458,9 @@ export const getRoundView = onCall(CORS, async (request) => {
 
   const { iid, groupId, seat } = await seatOfCaller(data, request)
   await runClock(iid, groupId, clockNow)
+  // (3) THE BACKSTOP. The only thing that makes a bot seat recoverable — and the ONLY
+  // bot trigger at all in online mode, where there is no clock to default anyone.
+  await runBotsQuietly(iid, groupId, clockNow)
 
   const settings = await settingsFor(iid)
   const stored = readStored((await stateDoc(iid, groupId).get()).data())

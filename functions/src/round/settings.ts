@@ -48,6 +48,18 @@ export interface RoundSettings {
   unitCost: number
   /** Rounds (§4): fixed, shown, drawn per group. */
   numRounds: number
+  /**
+   * §7.1 — the Supplier bot's punishment length, in rounds, after being lied to.
+   *
+   * ⚠ THE ONLY TUNING PARAMETER IN THE BOT PAIR, and deliberately SHORT (1).
+   * The punishment is not there to deter a student; it is there to make the
+   * consequence of lying VISIBLE inside a ten-round game. A long punishment flattens
+   * the truthfulness chart for the rest of the run and teaches nothing round one did
+   * not. It is also what makes the pair self-correcting: the Retailer bot resumes
+   * telling the truth when it sees 3 after HIGH again, which can only happen because
+   * the Supplier re-tests.
+   */
+  botPunishmentRounds: number
 }
 
 export const DEFAULT_ROUND_SETTINGS: RoundSettings = {
@@ -61,6 +73,7 @@ export const DEFAULT_ROUND_SETTINGS: RoundSettings = {
   wholesalePrice: 2,
   unitCost: 1,
   numRounds: 10,
+  botPunishmentRounds: 1,   // k (Elena, 2026-07-28)
 }
 
 /**
@@ -132,6 +145,11 @@ export function validateSettings(s: RoundSettings): Validation {
     return { ok: false, reason: 'Retail price must be at least the wholesale price.' }
   }
   if (s.numRounds < 1) return { ok: false, reason: 'There must be at least one round.' }
+  // k = 0 would mean "punish for no rounds", i.e. no punishment at all — a silently
+  // disabled strategy that still looks configured. Refuse it rather than accept it.
+  if (!Number.isInteger(s.botPunishmentRounds) || s.botPunishmentRounds < 1) {
+    return { ok: false, reason: 'The bot punishment length must be a whole number of at least 1 round.' }
+  }
   return validateHighProfile(s.high)
 }
 
@@ -147,6 +165,7 @@ export const CONFIG_KEYS = {
   wholesalePrice: 'wholesale_price',
   unitCost: 'unit_cost',
   numRounds: 'num_rounds',
+  botPunishmentRounds: 'bot_punishment_rounds',
 } as const
 
 /**
@@ -176,5 +195,6 @@ export function settingsFromConfig(config: Record<string, unknown> | undefined):
     wholesalePrice: num(CONFIG_KEYS.wholesalePrice, d.wholesalePrice),
     unitCost: num(CONFIG_KEYS.unitCost, d.unitCost),
     numRounds: num(CONFIG_KEYS.numRounds, d.numRounds),
+    botPunishmentRounds: num(CONFIG_KEYS.botPunishmentRounds, d.botPunishmentRounds),
   }
 }

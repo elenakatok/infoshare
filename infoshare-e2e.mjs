@@ -494,6 +494,237 @@ async function main() {
       '6. every online pushed record carries a normalized score')
   }
 
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // BOTS — a COMPLETE UNATTENDED GAME, driven by the SERVER runner.
+  //
+  // ⚠ TEN ROUNDS, NOT THREE. The strategies only become visible over a run: the lie, the
+  // punishment, the re-test and the recovery need rounds to happen IN. A three-round
+  // smoke would pass against a bot that reported at random — exactly the placeholder
+  // this slice replaced.
+  //
+  // ⚠ AND NOBODY DECIDES ANYTHING. No submitMessage or submitProduction is called here
+  // at all. getRoundView is polled, which is what a student's screen does while they sit
+  // and watch. If the group finishes, it is because the server runner drove the seats
+  // through the same transaction core a human hits.
+  //
+  // ⚠ THREE STUDENTS, BECAUSE THE ODD SEAT IS THE POINT. Groups are two, so an odd class
+  // leaves exactly one leftover — every time it is odd. That leftover's group is SHORT,
+  // and topUpGroupWithBots fills it. One student alone never forms a group at all, so
+  // there would be nothing to top up.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  banner('BOTS (CLASSROOM) — odd seat filled by a bot → ten rounds unattended → gradebook')
+  {
+    const gid = 'e2e-bots'
+    await syncRoster(gid)
+    await callFn('updateGameConfig', asDev(gid, { num_rounds: 10 }))
+
+    // ⚠ THE FULL LAUNCH PATH, INCLUDING THE ATTENDANCE CODE. Classroom matching only
+    // considers students who are PRESENT. Skipping the code leaves three students who
+    // have done everything except arrive, and matching correctly forms nothing — which
+    // reads as "matching is broken" and is not.
+    const code = (await genCode(gid)).result?.code
+    const PIDS3 = ['stu1', 'stu2', 'stu3']
+    for (const pid of PIDS3) {
+      await assignRole(gid, pid)
+      await studentPreGame(gid, pid, code)
+      await beOnThePage(gid, pid)
+    }
+    await matchNow(gid)
+
+    const d0 = await dashboard(gid)
+    const groups0 = d0.result?.groups ?? []
+    check(groups0.length >= 1, `1. matching formed ${groups0.length} group(s) from 3 students`)
+
+    const rosterSnap = await callFn('getRoster', asDev(gid, {}))
+    const membersById = {}
+    for (const g of rosterSnap.result?.groups ?? []) {
+      membersById[g.group_id] = Object.values(g.participants_by_role ?? {}).flat()
+    }
+    const membersOf = (g) => membersById[g.group_id] ?? []
+    /*
+      ⚠ NO SHORT GROUP TO FIND — AND THAT IS THE FEATURE. `triggerMatching` is chained:
+      it forms the full human groups and then bot-fills the leftover in the same action,
+      so by the time matching returns, the odd student is ALREADY in a full group with a
+      robot. An instructor never sees a short group and never has to know a second button
+      exists. So the group to drive is the one with a BOT in it, not the one with a
+      missing seat.
+    */
+    const short = groups0.find((g) => membersOf(g).some((pid) => String(pid).startsWith('bot_')))
+    check(!!short, `2. matching bot-filled the odd student's group (sizes: ${groups0.map((g) => membersOf(g).length).join(', ')})`)
+    if (!short) throw new Error('no bot-filled group — the odd-seat case cannot be exercised')
+    check(membersOf(short).length === 2,
+      `2. and that group is FULL — one human, one robot (${membersOf(short).join(', ')})`)
+
+    // Pressing Match again must not mint a second bot group for a student who has one.
+    const again = await matchNow(gid)
+    const d1 = await dashboard(gid)
+    check(again.ok && (d1.result?.groups ?? []).length === groups0.length,
+      `2. re-matching is idempotent — still ${groups0.length} groups`)
+
+    const st = await startClass(gid)
+    check(st.ok, `3. Start class — ${st.ok ? `started ${st.result.started}` : st.error}`)
+
+    const humanPid = membersOf(short).find((pid) => !String(pid).startsWith('bot_'))
+    const botGroupNow = async () => {
+      const dd = await dashboard(gid)
+      return (dd.result?.groups ?? []).find((g) => g.group_id === short.group_id)
+    }
+
+    // ⚠ IDEMPOTENCY, FIRED TWICE, CHECKED ON THE STATE. The runner is idempotent by
+    // construction — the engine rejects a seat that has already acted this stage — and
+    // the proof is that the ROUND does not jump. Checking the return value would only
+    // prove the runner agrees with itself.
+    const beforeR = (await botGroupNow())?.round ?? 0
+    await callFn('getRoundView', asStudent(gid, humanPid, { group_id: short.group_id })).catch(() => {})
+    await callFn('getRoundView', asStudent(gid, humanPid, { group_id: short.group_id })).catch(() => {})
+    const afterR = (await botGroupNow())?.round ?? 0
+    check(afterR - beforeR <= 1, `4. two bot passes did not double-advance the round (${beforeR} → ${afterR})`)
+
+    /*
+      ⚠ THE HUMAN SEAT MUST ACT — this group is ONE human and ONE robot, which is what an
+      odd class actually produces. An earlier version of this gate polled and asserted
+      "no human action", and the group correctly sat at round 1 forever: half of every
+      round belonged to a student who was never going to press anything.
+      "Unattended" describes the BOT's seat, not the group.
+
+      So the human plays a fixed, deliberately dumb policy — always report the truth,
+      always produce 2 — and every assertion below is about what the BOT did opposite it.
+    */
+    let bg = null
+    for (let i = 0; i < 120; i++) {
+      const v = await callFn('getRoundView', asStudent(gid, humanPid, { group_id: short.group_id }))
+      if (v.ok) {
+        const view = v.result.view
+        if (view.owes === 'message') {
+          await submitMessage(gid, humanPid, short.group_id, view.demandType)
+        } else if (view.owes === 'production') {
+          await submitProduction(gid, humanPid, short.group_id, 2)
+        }
+      }
+      bg = await botGroupNow()
+      if (bg?.status === 'finished') break
+      await sleep(120)
+    }
+    check(bg?.status === 'finished',
+      `5. ten rounds played out against the server bot (${bg?.status} @ round ${bg?.round})`)
+
+    // 6. THE STRATEGIES RAN — assert the history, not merely that it finished.
+    const rep = await callFn('getRoundReport', asDev(gid, {}))
+    const rows = (rep.ok ? rep.result.rows : []).filter((r) => r.group_id === short.group_id)
+    check(rows.length === 10, `6. ten rounds on record for the bot group (got ${rows.length})`)
+    /*
+      ⚠ ASSERT ONLY THE SEAT THE BOT ACTUALLY HOLDS. This group is one human and one
+      robot, and role assignment is late — the bot may be Retailer OR Supplier. An
+      earlier version asserted BOTH strategies over the same ten rounds and failed on
+      "production after LOW never changed", because production was the HUMAN's, and the
+      human here deliberately produces 2 every round. The assertion was true of the bot
+      and false of the group, which is the sort of failure that reads as a bot bug and
+      is not one.
+    */
+    const botPid = membersOf(short).find((pid) => String(pid).startsWith('bot_'))
+    // The instructor round view is what carries seat → role and seat → pid. The round
+    // report rows do not, and asking them for it silently produced "unknown".
+    const irv = await callFn('getInstructorRoundView', asDev(gid, { group_id: short.group_id }))
+    const pidBySeat = irv.result?.pidBySeat ?? {}
+    const roleBySeat = irv.result?.roleBySeat ?? {}
+    const botSeat = Object.keys(pidBySeat).find((k) => pidBySeat[k] === botPid)
+    const botRole = botSeat === undefined ? null : roleBySeat[botSeat]
+    check(botRole === 'retailer' || botRole === 'supplier',
+      `6. the bot holds a real seat and its role is known (${botRole ?? 'unknown'})`)
+
+    if (botRole === 'retailer') {
+      const highRows = rows.filter((r) => r.demandType === 'HIGH')
+      check(highRows.length > 0 && highRows.every((r) => r.message === 'HIGH'),
+        `6. RETAILER bot reported HIGH on every HIGH round (${highRows.length} such rounds)`)
+    } else if (botRole === 'supplier') {
+      const lowReports = rows.filter((r) => r.message === 'LOW')
+      check(lowReports.length > 0 && lowReports.every((r) => r.production === 1),
+        `6. SUPPLIER bot produced 1 after every LOW report (${lowReports.length} such rounds)`)
+      const cleanHigh = rows.filter((r) => r.message === 'HIGH' &&
+        !rows.some((p) => p.round < r.round && p.message === 'HIGH' && p.demandType === 'LOW'))
+      check(cleanHigh.every((r) => r.production === 3),
+        `6. SUPPLIER bot produced 3 after HIGH while never yet lied to (${cleanHigh.length} rounds)`)
+    }
+
+    // 7. ⚠ THE PUSH LANDS, AND THE BOT IS NOT IN IT.
+    pushed = []
+    const sc = await scoreAndRecord(gid)
+    await sleep(800)
+    check(sc.ok, `7. scoreAndRecord — ${sc.ok ? `scored ${sc.result.scored}` : sc.error}`)
+    check(pushed.length > 0, `7. gradebook records LANDED from a bot-driven game (${pushed.length})`)
+    check(pushed.every((p) => !String(p.participant_id).startsWith('bot_')),
+      '7. and NO bot appears in the gradebook')
+  }
+
+  // ⚠ ONLINE IS THE HARDER CASE FOR BOTS. There is no clock, so nothing defaults a seat
+  // the runner failed to drive — the polling backstop is the ONLY thing moving the game.
+  // A bot bug that classroom mode papers over with a timeout hangs here forever.
+  banner('BOTS (ONLINE) — no clock, backstop only → unattended → gradebook')
+  {
+    const gid = 'e2e-bots-online'
+    await syncRoster(gid)
+    await callFn('updateGameConfig', asDev(gid, { clock_mode: 'off', num_rounds: 10 }))
+
+    // ⚠ THREE ELIGIBLE STUDENTS, SO THE CLASS IS ODD. With an even number online
+    // grouping pairs everyone and there is no seat for a bot at all — an earlier version
+    // used one student, the synced roster supplied a partner, and the "no robot in the
+    // group" failure was the fixture's fault rather than the runner's.
+    const ONLINE3 = ['stu1', 'stu2', 'stu3']
+    for (const pid of ONLINE3) {
+      await assignRole(gid, pid)
+      await callFn('submitKnowledgeCheck', asStudent(gid, pid, { answer: 'player' }))
+      await callFn('completePrep', asStudent(gid, pid, {}))
+      await beOnThePage(gid, pid)
+    }
+    // One online student is an odd class of one: the chained matcher pairs them with a
+    // robot, exactly as it does in a classroom.
+    // ⚠ ONLINE GROUPS ARE FORMED BY groupParticipantsOnline, NOT triggerMatching. The
+    // classroom matcher keys on attendance-code confirmation, which online students never
+    // do — pointing this block at it produced zero groups and looked like a bot failure.
+    await callFn('groupParticipantsOnline', asDev(gid, {}))
+    const og = await callFn('getOnlineGroups', asDev(gid, {}))
+    const allG = og.result?.groups ?? []
+    // The SHORT group is the odd student's — that is the one a bot belongs in.
+    const g0 = allG.find((g) => (g.occupants ?? []).length < 2) ?? allG[0]
+    check(!!g0, `1. an online group was formed (${allG.length}; sizes ${allG.map((g) => (g.occupants ?? []).length).join(', ')})`)
+    if (!g0) throw new Error('no online group formed')
+    const top = await callFn('topUpGroupWithBots', asDev(gid, { group_id: g0.group_id }))
+    check(top.ok, `2. topUpGroupWithBots (online) — ${top.ok ? `added ${top.result.added}` : top.error}`)
+    const og2 = await callFn('getOnlineGroups', asDev(gid, {}))
+    const occ = (og2.result?.groups ?? []).find((g) => g.group_id === g0.group_id)?.occupants ?? []
+    check(occ.some((o) => String(o.participant_id).startsWith('bot_')),
+      `2. and the online group now contains a robot (${occ.map((o) => o.participant_id).join(', ')})`)
+
+    for (const pid of ONLINE3) await callFn('recordLogin', asStudent(gid, pid, {}))
+    let bg = null
+    for (let i = 0; i < 120; i++) {
+      const humanOnline = occ.map((o) => o.participant_id).find((pid) => !String(pid).startsWith('bot_'))
+      const v = await callFn('getRoundView', asStudent(gid, humanOnline, { group_id: g0.group_id }))
+      if (v.ok) {
+        const view = v.result.view
+        if (view.owes === 'message') await submitMessage(gid, humanOnline, g0.group_id, view.demandType)
+        else if (view.owes === 'production') await submitProduction(gid, humanOnline, g0.group_id, 2)
+      }
+      const dd = await dashboard(gid)
+      bg = (dd.result?.groups ?? []).find((g) => g.group_id === g0.group_id)
+      if (bg?.status === 'finished') break
+      await sleep(120)
+    }
+    // ⚠ NO CLOCK HERE AT ALL. Every bot action in this block came from the polling
+    // backstop; if the backstop were removed this block would hang rather than fail.
+    check(bg?.status === 'finished',
+      `3. the online group finished with NO clock — bots driven purely by the backstop (${bg?.status} @ round ${bg?.round})`)
+
+    pushed = []
+    const sc = await scoreAndRecord(gid)
+    await sleep(800)
+    check(sc.ok, `4. scoreAndRecord (online bots) — ${sc.ok ? `scored ${sc.result.scored}` : sc.error}`)
+    check(pushed.length > 0, `4. gradebook records LANDED from the ONLINE bot game (${pushed.length})`)
+    check(pushed.every((p) => !String(p.participant_id).startsWith('bot_')),
+      '4. and no bot appears in the online gradebook either')
+  }
+
   // ⚠ THE HELPER MUST HAVE RUN. Every leak assertion lives inside assertNoLeak, and a
   // helper that is never reached passes vacuously — `[].every()` is true. Counting the
   // assertions and requiring a floor is what makes the block above evidence rather than

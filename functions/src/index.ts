@@ -8,7 +8,6 @@ import {
   makeGenerateAttendanceCode,
   makeVerifyAttendanceCode,
   makeGetRoster,
-  makeTriggerMatching,
   makeSubmitInstructorOutcome,
   makeFinalizeInstance,
   makePushResultsToClassroom,
@@ -63,7 +62,10 @@ export const getRoster              = makeGetRoster(infoshareGameDef)
  * deploy list generated from this file's exports proves completeness — it proves only
  * that the list agrees with itself.
  */
-export const triggerMatching        = makeTriggerMatching(infoshareGameDef)
+// ⚠ CHAINED: full human groups, THEN bot-fill the leftover. With two-seat groups an odd
+// class always leaves exactly one student, and the shared matcher forms only FULL groups
+// — so without the chain that student has no group and no game. See matchWithBots.ts.
+export { triggerMatching, fillRemainderWithBots } from './matchWithBots'
 export const getGameConfig          = makeGetGameConfig(infoshareGameDef)
 export const updateGameConfig       = makeUpdateGameConfig(infoshareGameDef)
 export const getInfoUrls            = makeGetInfoUrls(infoshareGameDef)
