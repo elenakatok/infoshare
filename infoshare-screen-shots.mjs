@@ -119,13 +119,83 @@ async function setUp() {
   return { groupId: group.group_id, roles }
 }
 
+
+/**
+ * ⚠ ASSERT THE PAYOFF TABLE, DO NOT PHOTOGRAPH IT.
+ *
+ * The emulator's fixed warning bar sits across the bottom of the viewport and covered the
+ * "3 lots" row in the first two rounds of screenshots. Emulator-only, so no student is
+ * affected — but it meant the complete payoff table had never actually been SEEN
+ * rendering, and "it looked right in the picture" is exactly the standard that let a
+ * 1875px history table hide four of its seven columns through four screenshots.
+ *
+ * So: check the structure (3 demand rows × 3 production columns), check every one of the
+ * nine cells has text, and check that nothing is drawn ON TOP of any of them —
+ * `elementFromPoint` at each cell's centre must land inside that same cell. That last
+ * check is the one the warning bar fails, and it is why the table is scrolled clear of it
+ * first rather than the check being relaxed to let it pass.
+ */
+async function assertPayoffTable(page, label) {
+  await page.locator('[data-testid="payoff-table"]').scrollIntoViewIfNeeded()
+  await sleep(300)
+  const r = await page.evaluate(() => {
+    const t = document.querySelector('[data-testid="payoff-table"]')
+    if (!t) return { ok: false, why: 'no payoff table on the page' }
+    const rows = [...t.querySelectorAll('tbody tr')]
+    const headers = [...t.querySelectorAll('thead th')].map((h) => h.textContent.trim())
+    const cells = [], empty = [], covered = []
+    for (const d of [1, 2, 3]) {
+      for (const q of [1, 2, 3]) {
+        const c = t.querySelector(`[data-testid="payoff-${d}-${q}"]`)
+        if (!c) { cells.push(null); continue }
+        const text = c.textContent.trim()
+        cells.push(text)
+        if (!text) empty.push(`${d}-${q}`)
+        const b = c.getBoundingClientRect()
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2)
+        // The hit may be the cell or something inside it; anything else is drawn on top.
+        if (!hit || !(c === hit || c.contains(hit))) {
+          covered.push(`${d}-${q} (covered by <${hit ? hit.tagName.toLowerCase() : 'nothing'}>)`)
+        }
+      }
+    }
+    return {
+      ok: true, rowCount: rows.length, headers, cells, empty, covered,
+      rowLabels: rows.map((tr) => tr.children[0].textContent.trim()),
+    }
+  })
+
+  if (!r.ok) { console.log(`  \u2717 ${label}: ${r.why}`); process.exitCode = 1; return }
+  let bad = false
+  const fail = (m) => { console.log(`  \u2717 ${label}: ${m}`); process.exitCode = 1; bad = true }
+
+  if (r.rowCount !== 3) fail(`${r.rowCount} demand rows, expected 3 (${r.rowLabels.join(', ')})`)
+  if (r.headers.length !== 4) fail(`${r.headers.length} header cells, expected 4 (${r.headers.join(' | ')})`)
+  if (r.cells.length !== 9 || r.cells.some((c) => c === null)) fail('not all nine payoff cells exist')
+  if (r.empty.length) fail(`empty cells: ${r.empty.join(', ')}`)
+  if (r.covered.length) fail(`cells with something drawn over them: ${r.covered.join('; ')}`)
+  if (!bad) {
+    console.log(`  \u2713 ${label}: 3\u00d73 payoff table complete and unobstructed \u2014 ${r.cells.join('  ')}`)
+  }
+}
+
 const shot = async (page, name) => {
   await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true })
   console.log(`  ✓ ${name}.png`)
 }
 
 const openSeat = async (browser, pid) => {
-  const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+  /*
+    Tall enough that the numbers panel clears the emulator's fixed bottom bar. The overlap
+    assertion is REAL, so the fix is to give the page room rather than to relax the check.
+
+    ⚠ VH is a negative control, not a convenience. `VH=900 node infoshare-screen-shots.mjs`
+    reproduces the original defect and the assertion must FAIL:
+      ✗ supplier panel: cells with something drawn over them: 3-1 (covered by <p>); …
+    If it ever passes at 900, the overlap check has stopped working and every green run
+    above it is worthless.
+  */
+  const page = await browser.newPage({ viewport: { width: 1100, height: Number(process.env.VH) || 1250 } })
   // Play is the ROOT route, not /play — a wrong path renders an empty router with no
   // error, and the wait below then times out looking like a game that never opened.
   await page.goto(`${FRONTEND}/?_pid=${pid}&_gid=${GID}`, { waitUntil: 'domcontentloaded' })
@@ -147,9 +217,17 @@ async function main() {
   await shot(retailer, '10-retailer-decision')
 
   // ── 2. THE INFORMATION PANEL, from the Retailer's screen ─────────────────────
-  await retailer.click('[data-testid="info-panel-toggle"]')
+  // ⚠ It is OPEN ALREADY in round 1 — clicking the toggle here would CLOSE it and the
+  // assertion below would then fail on a page that is behaving exactly as designed.
+  // Assert the round-1 default while we are here, since it is the whole point of it.
+  const openInRound1 = await retailer.locator('[data-testid="information-panel"]').count()
+  console.log(openInRound1
+    ? '  ✓ the numbers panel is OPEN by default in round 1'
+    : '  ✗ the numbers panel is closed in round 1 — it should default open')
+  if (!openInRound1) { process.exitCode = 1; await retailer.click('[data-testid="info-panel-toggle"]') }
   await retailer.waitForSelector('[data-testid="information-panel"]')
   await sleep(600)
+  await assertPayoffTable(retailer, 'retailer panel')
   await shot(retailer, '11-information-panel')
 
   // ── 3. THE SUPPLIER'S DECISION SCREEN — the one that matters ─────────────────
@@ -174,9 +252,12 @@ async function main() {
 
   // The Information panel is reachable from the SUPPLIER's screen too — spec §1.4 says
   // every decision screen, both roles, and this is where that is proved.
-  await supplier.click('[data-testid="info-panel-toggle"]')
+  if (!(await supplier.locator('[data-testid="information-panel"]').count())) {
+    await supplier.click('[data-testid="info-panel-toggle"]')
+  }
   await supplier.waitForSelector('[data-testid="information-panel"]')
   await sleep(600)
+  await assertPayoffTable(supplier, 'supplier panel')
   await shot(supplier, '13-information-panel-supplier')
 
   // ── 4. THE RESULTS SCREEN, and 5. THE HISTORY TABLE ──────────────────────────

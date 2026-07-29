@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { HIGH_COLOUR, LOW_COLOUR } from '../demandColours'
 import { colors, typography, spacing } from '@mygames/game-ui'
 import { payoffTable } from '../../../functions/src/round/resolver'
 import { DEFAULT_ROUND_SETTINGS, profileFor, LOTS, type RoundSettings, type Lots } from '../../../functions/src/round/settings'
@@ -24,8 +25,6 @@ import { DEFAULT_ROUND_SETTINGS, profileFor, LOTS, type RoundSettings, type Lots
 // see these on screen during the game" — so it has to be the same picture.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const HIGH_COLOUR = '#D38626'
-const LOW_COLOUR = '#0f766e'
 
 function Histogram({ type, s }: { type: 'HIGH' | 'LOW'; s: RoundSettings }) {
   const dist = profileFor(type, s)
@@ -138,17 +137,38 @@ export function InformationPanelBody({ settings = DEFAULT_ROUND_SETTINGS }: { se
 }
 
 /**
- * The panel as a toggle, for the decision screens. Collapsed by default so it never
- * pushes the actual decision below the fold on a phone, but one tap away on both screens
- * and in both stages.
+ * THE PANEL AS A TOGGLE, on both decision screens.
+ *
+ * ⚠ OPEN BY DEFAULT IN ROUND 1, THEN THE STUDENT'S OWN CHOICE FOREVER AFTER.
+ *
+ * Round 1 is when a student most needs the distributions and the payoff table, and when
+ * they are least likely to go looking for a control they have never seen. Every round
+ * after that, the panel is whatever they last left it — a default that reasserts itself
+ * each round would reopen a panel they deliberately closed, ten times running.
+ *
+ * ⚠ THE CHOICE IS TRACKED, NOT INFERRED. `touched` records whether the student has
+ * actually used the toggle. Without it, "open in round 1 only" and "the student closed
+ * it in round 1" are the same state, and the panel would spring back open in round 2 for
+ * exactly the student who just said no.
+ *
+ * Deliberately component-local, not persisted: it is a reading preference for one
+ * sitting, and a stored one would outlive the class it was set in.
  */
-export default function InformationPanel({ settings }: { settings?: RoundSettings }) {
-  const [open, setOpen] = useState(false)
+export default function InformationPanel({ settings, round }: { settings?: RoundSettings; round?: number }) {
+  const [touched, setTouched] = useState(false)
+  const [openedByUser, setOpenedByUser] = useState(false)
+  const open = touched ? openedByUser : round === 1
+
+  const toggle = () => {
+    setOpenedByUser(!open)
+    setTouched(true)
+  }
+
   return (
     <section style={{ margin: `${spacing.gapMd} 0` }}>
       <button
         data-testid="info-panel-toggle"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         style={{ padding: '0.3rem 0.7rem', fontSize: typography.sizeSm, cursor: 'pointer',
                  borderRadius: 4, border: `1px solid ${colors.borderMid}`, background: colors.white }}
       >

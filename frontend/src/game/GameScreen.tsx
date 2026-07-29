@@ -10,6 +10,7 @@ import {
 import HistoryTable from './HistoryTable'
 import ClockBar from './ClockBar'
 import InformationPanel from './InformationPanel'
+import { colourFor, tintFor, textFor } from '../demandColours'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE STUDENT GAME SCREEN — the two decision screens (spec §1.1).
@@ -119,6 +120,17 @@ export default function GameScreen({
 
   const v = data.view
 
+  /*
+    ⚠ PRESENCE DECIDES, the narrowing is only for the type checker.
+    `'demandType' in v` is still the gate — never `v.demandType != null` and never
+    `v.demandType ?? 'unknown'`. When the reveal rule withholds the draw the KEY IS
+    ABSENT, and a nullish test written the easy way turns "hidden" into a rendered value
+    the moment someone changes the server to send null. This binding exists because
+    TypeScript does not narrow an optional property through `in` at the use site, not
+    because absence and undefined are being treated as the same thing.
+  */
+  const trueType = 'demandType' in v ? v.demandType : undefined
+
   // ── the round result screen ──────────────────────────────────────────────────
   if (showingResultFor !== null && v.history.length >= showingResultFor) {
     const row = v.history[showingResultFor - 1]
@@ -207,13 +219,13 @@ export default function GameScreen({
         whole decision is what to do with a fact only they hold; burying it in a sentence
         makes the game about reading carefully instead of about choosing.
       */}
-      {'demandType' in v && (
+      {trueType !== undefined && (
         <section
           data-testid="private-state"
           style={{
             margin: `${spacing.gapMd} 0`, padding: spacing.gapMd, borderRadius: 8,
-            border: `2px solid ${v.demandType === 'HIGH' ? '#D38626' : '#0f766e'}`,
-            background: v.demandType === 'HIGH' ? '#fdf5e9' : '#effaf7',
+            border: `2px solid ${colourFor(trueType)}`,
+            background: tintFor(trueType),
           }}
         >
           <p style={{ margin: 0, fontSize: typography.sizeSm, color: colors.textSecondary,
@@ -221,8 +233,8 @@ export default function GameScreen({
             Only you can see this
           </p>
           <p style={{ margin: '0.15rem 0 0', fontSize: '2rem', fontWeight: 800, lineHeight: 1.1,
-                      color: v.demandType === 'HIGH' ? '#8a5410' : '#0b544d' }}>
-            Demand is {v.demandType}
+                      color: textFor(trueType) }}>
+            Demand is {trueType}
           </p>
           <p style={{ margin: '0.3rem 0 0', fontSize: typography.sizeSm, color: colors.textSecondary }}>
             This is the true demand type for round {v.round}. The Supplier has not been told it.
@@ -233,28 +245,29 @@ export default function GameScreen({
       {v.owes === 'message' && (
         <>
           {/*
-            ⚠ DO NOT SOFTEN THIS COPY. The Retailer is being told, in plain words, that
-            they may report a type that is not the one they were shown, and that nothing
-            checks it at the time. That is not a loophole in the game — it is the game.
-            A student who believes the report is supposed to be true is not playing the
-            same experiment as the one who does not, and the class data becomes a mixture
-            of two populations. "Please report honestly", "your report should reflect…",
-            or any wording that implies an obligation, breaks the design.
+            ⚠ ELENA'S WORDING, VERBATIM. Two sentences, and the first one carries the
+            whole design: a student who believes the report is SUPPOSED to be true is not
+            running the same experiment as one who does not, and the class data becomes a
+            mixture of two populations. Never add "please report honestly", "your report
+            should reflect…", or anything else implying an obligation.
+
+            Equally: do not ADD to it. An earlier version explained at length that nothing
+            checks the report and that the Supplier sees only the message — both obvious
+            from the screen in front of them, and both covered by the instruction sheet
+            and the knowledge check. Students do not read paragraphs on a decision screen.
           */}
           <Choices
             label={`Report a demand type to the Supplier.`}
             help={
               <>
-                <strong>Your report does not have to be true.</strong> You may report
-                either type, whatever you were just shown. Nothing stops you and nothing
-                checks it now — the Supplier sees only your report when they choose their
-                production. They will learn the true type after the round is over.
+                Your report does not have to be true. The Supplier will learn the true
+                type after the round is over.
               </>
             }
             testId="message-choices"
             options={[
-              { value: 'HIGH', label: 'Report HIGH', tint: '#D38626' },
-              { value: 'LOW', label: 'Report LOW', tint: '#0f766e' },
+              { value: 'HIGH', label: 'Report HIGH', tint: colourFor('HIGH') },
+              { value: 'LOW', label: 'Report LOW', tint: colourFor('LOW') },
             ]}
             disabled={busy}
             onPick={(val) => act(() => submitMessage(groupId, val as DemandType))}
@@ -286,12 +299,14 @@ export default function GameScreen({
             </p>
             <p data-testid="reported-type"
                style={{ margin: '0.15rem 0 0', fontSize: '2rem', fontWeight: 800, lineHeight: 1.1,
-                        color: v.currentMessage === 'HIGH' ? '#8a5410' : '#0b544d' }}>
+                        color: v.currentMessage === 'LOW' ? textFor('LOW') : textFor('HIGH') }}>
               {v.currentMessage ?? '—'}
             </p>
+            {/* Elena's wording, verbatim. Do not expand it. */}
             <p style={{ margin: '0.3rem 0 0', fontSize: typography.sizeSm, color: colors.textSecondary }}>
               This is what the Retailer chose to tell you. It may or may not be the true
-              demand type — you will find out after you have produced.
+              demand type. After your production decision you will learn the true demand
+              type.
             </p>
           </section>
           <Choices
@@ -321,7 +336,7 @@ export default function GameScreen({
         both stages and therefore both roles. Keyed on `owes`, NOT on role: keying it on
         role is how one of the two screens quietly loses it.
       */}
-      {v.owes !== null && <InformationPanel />}
+      {v.owes !== null && <InformationPanel round={v.round} />}
 
       {error && <p role="alert" data-testid="action-error" style={{ color: '#b91c1c' }}>{error}</p>}
 

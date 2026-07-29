@@ -8,16 +8,16 @@ import type { Series, PairPoint } from './analytics'
 // Pricing uses — so infoshare's charts are not a different generation of picture.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ⚠ ONE COLOUR PER CONCEPT, ACROSS EVERY CHART ON THE PAGE.
-// HIGH is always this orange and LOW is always this teal — in the trustworthiness
-// series, in the trust series, in the scatter and in every legend. When the same idea
-// changes colour between two charts a reader has to re-learn the key each time, and on a
-// projector they will not.
-export const HIGH_COLOUR = '#D38626'   // the house orange
-export const LOW_COLOUR  = '#0f766e'   // teal — distinct from orange in mono and to most
-                                       // colour-blind viewers
-/** Anything that is neither HIGH nor LOW (the scatter's pair dots). */
-export const NEUTRAL_COLOUR = '#475569'
+// ⚠ ONE COLOUR PER CONCEPT, ACROSS EVERY CHART ON THE PAGE — AND ACROSS THE SCREENS AND
+// THE PRINTED SHEET TOO. HIGH is always blue and LOW is always red, in the trustworthiness
+// series, in the trust series, in the scatter, in every legend, in the in-game numbers
+// panel, and on the instruction sheet the student was handed. When the same idea changes
+// colour between two pictures a reader has to re-learn the key each time.
+//
+// Defined ONCE in ../demandColours and re-exported here for the report modules that
+// already import from this file. Do not declare a demand colour anywhere else.
+export { HIGH_COLOUR, LOW_COLOUR, NEUTRAL_COLOUR } from '../demandColours'
+import { HIGH_COLOUR, LOW_COLOUR, NEUTRAL_COLOUR } from '../demandColours'
 
 /** Big enough to read projected — these charts are used in a lecture theatre. */
 const DOT = 6
@@ -48,9 +48,16 @@ export function TrustworthinessChart({ data, scope }: { data: { trueHigh: Series
       countSeriesKey="trueLow"
       caption={
         <>
+          {/*
+            ⚠ IF A CAPTION NAMES A COLOUR, IT IS COUPLED TO THE PALETTE. This one said
+            "orange" and "teal" and became wrong the moment the palette moved to blue and
+            red — a caption that contradicts the chart is worse than no caption, because
+            the reader trusts the words. Say HIGH and LOW, which the legend already
+            colours, and the sentence survives the next palette change too.
+          */}
           A Retailer never loses by reporting HIGH when demand really is HIGH, so the
-          <strong> orange</strong> dots sit near the top almost by construction.
-          <strong> The teal dots are the game</strong> — telling the truth about LOW is
+          <strong> HIGH</strong> dots sit near the top almost by construction.
+          <strong> The LOW dots are the game</strong> — telling the truth about LOW is
           what costs something. Each dot is one round; clock-resolved rounds are excluded,
           so the number of groups behind a dot varies and the dots are deliberately not
           joined.
