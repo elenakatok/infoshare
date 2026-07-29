@@ -345,6 +345,28 @@ async function main() {
     // 5. ⚠ START CLASS — the step that was missing entirely in production.
     const st = await startClass(gid)
     check(st.ok, `5. startAllGroups — ${st.ok ? `started ${st.result.started}` : st.error}`)
+
+    /*
+      ⚠ RE-PRESSABLE, AND THIS IS THE ONLY CONTROL THAT STARTS A GROUP.
+      There is deliberately NO per-group Start button: "Start class" is the escape hatch
+      for the group that was not ready when the class began. That claim is only worth
+      making if a second press is proved harmless, so press it again and require that
+      every already-running group is REPORTED as already_running, that nothing is started
+      a second time, and — the part that actually matters — that no group's round or
+      history is rolled back. An idempotent call that silently reopened round 1 would
+      still return a tidy summary.
+    */
+    const before = (await dashboard(gid)).result.groups.map((g) => [g.group_id, g.round, g.started])
+    const st2 = await startClass(gid)
+    check(st2.ok, `5. "Start class" is RE-PRESSABLE — ${st2.ok ? 'ok' : st2.error}`)
+    check(st2.ok && st2.result.started === 0,
+      `5. a second press starts nothing new (started=${st2.ok ? st2.result.started : '?'})`)
+    check(st2.ok && st2.result.already_running === before.length,
+      `5. and reports all ${before.length} running groups as already_running ` +
+      `(got ${st2.ok ? st2.result.already_running : '?'})`)
+    const after = (await dashboard(gid)).result.groups.map((g) => [g.group_id, g.round, g.started])
+    check(JSON.stringify(before) === JSON.stringify(after),
+      '5. and NO running group was reset — same round and started flag before and after')
     const d1 = await dashboard(gid)
     // ⚠ LENGTH FIRST, ALWAYS. `[].every(...)` is true, so an assertion written only as
     // `every(...)` reports success against zero groups. The first run of this harness did
