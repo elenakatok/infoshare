@@ -30,34 +30,44 @@ import type { RoundRecord, Role } from '../api'
 const money = (n: number) => num(n)
 
 
-/** The viewer's own block is marked `mine` and lightly shaded. */
 /**
- * THE SEVEN COLUMNS (spec §1.2), IDENTICAL FOR BOTH ROLES.
+ * THE SEVEN COLUMNS (spec §1.2), IDENTICAL FOR BOTH ROLES — one standalone, then three
+ * and three, under TWO header rows exactly as crisis renders it.
+ *
+ *   (blank) |            Retailer            |          Supplier
+ *   Period  | Actual forecast Report Profit  | Production Demand Profit
  *
  * ⚠ THE PRIVACY IN THIS GAME IS WITHIN A ROUND, NOT ACROSS THE GAME. Once a round
  * resolves the true type and the realised demand become public to both seats — which is
  * exactly what makes a misleading report discoverable one round later, and therefore what
  * makes reputation possible at all. Do not filter a column by role.
  *
+ * ── WHY THE TWO PUBLIC-TRUTH COLUMNS SIT INSIDE THE SEAT BLOCKS ──────────────
+ * They are grouped by WHOSE STORY THE COLUMN BELONGS TO, not by who may see it. The
+ * retailer's story is: it sees the actual forecast, then chooses what to report — so
+ * those two sit side by side, and the gap between them IS the lie. The supplier's story
+ * is: it commits production, then demand arrives and decides what sold — so Demand sits
+ * under Supplier, immediately after the commitment it judges.
+ *
+ * ⚠ `Demand` IS `actualDemand`, NOT `sales`. Sales is not a column and never was. An
+ * earlier draft rendered `h.sales` under a "Sold" heading, so a round with demand 3 and
+ * production 1 showed "Sold 1" and hid the 3 — concealing the shortfall, which is the
+ * exact mistake this game is about. Sales is min(production, demand) and is therefore
+ * derivable from two columns already on screen; the demand that was MISSED is not.
+ *
  * The columns come from THREE different places, a distinction invisible in the list and
  * needed by anyone wiring it (spec §1.2):
- *   Actual Forecast    round field  demand_type
- *   Reported Forecast  submission   stage 1
- *   Production         submission   stage 2
- *   Customer Demand    round field  actual_demand
- *   both Profits       result value from the resolver
- */
-/**
- * GROUPED MODE — TWO HEADER ROWS, exactly as crisis renders it.
+ *   Actual forecast  round field  demand_type
+ *   Report           submission   stage 1
+ *   Production       submission   stage 2
+ *   Demand           round field  actual_demand
+ *   both Profits     result       value from the resolver
  *
  * ⚠ THE FLAT SEVEN WERE WHAT SET THE WIDTH. Every column spelled out its owner
  * ("Reported Forecast by Retailer"), repeating in each header what a group header says
  * once. Nine hundred pixels of table for seven values, overflowing a 1300px window.
- *
  * Crisis fits TEN columns in ~400px because the top row groups by WHO and the bottom row
- * carries short labels. Same widget, a mode infoshare simply was not using — I built the
- * group/sub model in slice 3, noted infoshare's flat seven "falls out of the model", and
- * drew the wrong conclusion: the model was right and the table was the wrong shape.
+ * carries short labels. Same widget, a mode infoshare simply was not using.
  *
  * ⚠ NO STYLE VALUES HERE. Padding, font sizes, row height, the two-row header and the
  * `mine` shading all live in the shared widget, so this cannot drift from crisis by
@@ -69,26 +79,20 @@ function sections(viewerRole?: Role) {
     col<RoundRecord>('round', 'Period', (h) => h.round, { align: 'left' }),
 
     group<RoundRecord>('retailer', 'Retailer', [
-      sub('message', 'Reported', (h) => h.message),
+      // What it SAW, then what it SAID. Adjacent on purpose: the gap is the lie.
+      sub('demandType', 'Actual forecast', (h) => h.demandType),
+      sub('message', 'Report', (h) => h.message),
       sub('profitR', 'Profit', (h) => money(h.profits.retailer),
         { testId: (h) => `retailer-profit-${h.round}` }),
     ], { mine: viewerRole === 'retailer' }),
 
     group<RoundRecord>('supplier', 'Supplier', [
-      sub('production', 'Produced', (h) => h.production),
+      // What it COMMITTED, then the demand that judged it. ⚠ actualDemand, not sales.
+      sub('production', 'Production', (h) => h.production),
+      sub('actualDemand', 'Demand', (h) => h.actualDemand),
       sub('profitS', 'Profit', (h) => money(h.profits.supplier),
         { testId: (h) => `supplier-profit-${h.round}` }),
     ], { mine: viewerRole === 'supplier' }),
-
-    /*
-      WHAT REALLY HAPPENED. Belongs to neither seat, so it takes no `mine` shading.
-      ⚠ Both cells are public to BOTH seats once the round resolves — that is what makes
-      a report that did not match discoverable one round later.
-    */
-    group<RoundRecord>('demand', 'Demand', [
-      sub('demandType', 'Type', (h) => h.demandType),
-      sub('sold', 'Sold', (h) => h.sales),
-    ]),
   ]
 }
 
@@ -126,8 +130,8 @@ export default function HistoryTable({ history, viewerRole }: { history: RoundRe
       />
       {history.length > 0 && (
         <p style={{ color: colors.textSecondary, fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
-          The Demand block is what really happened — both players see it once the round
-          is over.{viewerRole ? ' Your own block is shaded.' : ''}
+          Actual forecast and Demand are what really happened — both players see them
+          once the round is over.{viewerRole ? ' Your own block is shaded.' : ''}
         </p>
       )}
     </div>

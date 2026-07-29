@@ -44,13 +44,22 @@ const GAMES = [
     cols: ['Period', 'Actual Forecast', 'Reported Forecast by Retailer', 'Production', 'Customer Demand', "Retailer's Profit", "Supplier's Profit"],
   },
   {
-    name: 'infoshare (AFTER — caption outside, wider band)',
-    // ⚠ infoshare does NOT use the standard shell for its history: seven columns need
-    // 856px, so it renders in a centred band up to 1000px. Without this override the row
-    // below would read as broken when it is the fixed, measured-green case.
-    box: 1000,
+    /*
+      ⚠ THE FIX WAS NOT THE BAND, AND THIS ROW USED TO SAY IT WAS. It claimed infoshare
+      rendered in a centred 1000px band because "seven columns need 856px" — both halves
+      wrong. The band took the table out of normal flow, so at ~570px the PAGE scrolled
+      sideways instead of the table; it was deleted. And the 856px was a consequence of
+      labels that each spelled out their owner, not a property of having seven columns.
+
+      What actually fixed it: GROUPED MODE. The block header says "Retailer" once, so the
+      sub-labels shrink to Report / Profit, and the table renders in the STANDARD shell
+      like every other game. Hence no `box` override here — needing one was the smell.
+    */
+    name: 'infoshare (AFTER — grouped, standard shell)',
     caption: null,
-    cols: ['Period', 'Actual Forecast', 'Reported Forecast by Retailer', 'Production', 'Customer Demand', "Retailer's Profit", "Supplier's Profit"],
+    // The leaf row, left to right. "Actual forecast" is measured at its longest WORD
+    // because game-ui 0.29.0 lets header cells wrap — that is the 116px → 74px column.
+    cols: ['Period', 'forecast', 'Report', 'Profit', 'Production', 'Demand', 'Profit'],
   },
   { name: 'pd (singleplayer)',      caption: null, cols: ['— passes no caption —'] },
   { name: 'pricing (singleplayer)', caption: null, cols: ['— passes no caption —'] },
@@ -84,11 +93,17 @@ for (const g of GAMES) {
     // Positive = fits the shell, nothing hidden. Negative = columns off-screen.
     box: g.box ?? SHELL,
     fits: (g.box ?? SHELL) - Math.max(capW, colsW),
+    // AFTER game-ui 0.28.0: the caption cell is whiteSpace:'normal', so the caption wraps
+    // and stops contributing to the table's minimum width. The binding constraint becomes
+    // the columns alone — which is why this can only ever shrink a table, never grow one.
+    afterW: colsW,
+    afterFits: (g.box ?? SHELL) - colsW,
   })
 }
 await browser.close()
 
 console.log(`\nstudent shell = ${SHELL}px (contentWidth 640 − pagePad 2rem × 2)\n`)
+console.log('BEFORE game-ui 0.28.0 — caption cell inherited white-space:nowrap')
 console.log('game                                        chars  caption  columns    table     box   vs box  verdict')
 console.log('─'.repeat(108))
 for (const r of rows) {
@@ -107,5 +122,19 @@ for (const r of rows) {
     ' ' + verdict,
   )
 }
-console.log('\n"vs shell" = 576 − table width. Negative means columns are outside the scroll')
-console.log('box with no affordance. A small positive is not safety: it is one added word.')
+console.log('\nAFTER game-ui 0.28.0 — caption wraps; the columns alone set the table width')
+console.log('game                                                      table     box   vs box  verdict')
+console.log('-'.repeat(108))
+for (const r of rows) {
+  const verdict = r.binding === 'no caption' ? 'unchanged'
+    : r.afterFits < 0 ? 'STILL OFF-SCREEN' : 'fits'
+  console.log(
+    r.name.padEnd(50),
+    (r.afterW ? r.afterW + 'px' : '—').padStart(8),
+    (r.box + 'px').padStart(7),
+    `${r.afterFits >= 0 ? '+' : ''}${r.afterFits}px`.padStart(9),
+    ' ' + verdict + (r.binding === 'no caption' ? '' : ` (was ${r.fits >= 0 ? '+' : ''}${r.fits}px)`),
+  )
+}
+console.log('\n"vs box" = container − table width. Negative means columns sit outside the')
+console.log('scroll box with no affordance. Wrapping can only shrink a table, never grow one.')

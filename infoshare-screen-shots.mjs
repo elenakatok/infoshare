@@ -370,6 +370,21 @@ async function main() {
         boxScrollW: wrap.scrollWidth,
         docScrollW: de.scrollWidth,
         viewportW: window.innerWidth,
+        overflowX: getComputedStyle(wrap).overflowX,
+        /*
+          ⚠ PER-COLUMN WIDTHS, BECAUSE "IT OVERFLOWS BY 9px" IS NOT ACTIONABLE. A table
+          that does not fit is one or two labels too wide, and the only way to know which
+          is to print them. Measured from the LEAF header cells so the number is paired
+          with the label that set it.
+        */
+        widths: [...t.querySelectorAll('tbody tr:first-child td')]
+          .map((c) => Math.round(c.getBoundingClientRect().width)),
+        labels: [
+          ...[...t.querySelectorAll('thead tr:first-child th')]
+            .filter((h) => !h.getAttribute('colspan'))
+            .map((h) => h.textContent.trim()),
+          ...[...t.querySelectorAll('thead tr:last-child th')].map((h) => h.textContent.trim()),
+        ],
       }
     })
   }
@@ -383,20 +398,51 @@ async function main() {
   console.log(fitsWide ? '  ✓ @1300 fits with NO horizontal scroll' : `  ✗ @1300 still overflows (${wide.boxScrollW} > ${wide.boxClientW})`)
 
   /*
-    ⚠ 570 NO LONGER OVERFLOWS, AND THAT IS THE POINT. Grouped mode shrank the table from
-    ~900px to ~470px, so at 570 it FITS — the old assertion ("the table must scroll here")
-    was asserting the broken behaviour and had to be replaced rather than kept green.
+    ── 570px: A BUDGET, NOT A BOOLEAN ───────────────────────────────────────────
+    ⚠ THE APPROVED HEADER DOES NOT QUITE FIT HERE, AND THAT IS A DECISION, NOT A BUG.
+    The seven labels need 475px; the student shell at a 570px window gives 466px. Measured,
+    per column:
 
-    The real requirement is: the page NEVER scrolls sideways at any width, and the table
-    scrolls inside its own box only when the window is GENUINELY too narrow. So 570 checks
-    the first, and a deliberately cramped 360 checks the second — otherwise "it scrolls
-    when needed" is untested at every width.
+      Period 62 · Actual forecast 74 · Report 63 · Profit 55 · Production 93 · Demand 74 · Profit 54
+
+    `Actual forecast` already wraps to its longest word — 116px flat, 74px wrapped, which is
+    the game-ui 0.29.0 change. `Production` is the widest at 93px and is ONE WORD, so no
+    amount of wrapping shrinks it; the only levers left were renaming a label Elena had
+    approved as final, or tightening the shared widget's padding for all four games to buy
+    9px. Both were rejected. The table scrolls 9px inside its own box at this width, WITH a
+    scrollbar affordance, and the page does not move.
+
+    ⚠ SO THIS ASSERTS A CEILING, NOT A PASS. An earlier pass of this file printed "the
+    table scrolls in its box (acceptable)" — a soft note that reads like a ✓ in a wall of
+    ✓s, which is how the 9px stayed invisible for a whole round of measurement. A bare
+    boolean is no better: "it overflows" is already true, so a new label costing 60px more
+    would not change the verdict.
+
+    The budget is what makes the number load-bearing. 10px is the measured 9px plus one for
+    rounding — deliberately no headroom, so ANY new width has to come here and be argued
+    for rather than absorbed silently.
+
+    The 360px case below is the OTHER half and is not interchangeable with this one: there
+    the window is too narrow for seven columns at any labelling, so the table MUST scroll —
+    which is what proves the scroll path still works. Both widths share the one invariant
+    the breakout div broke: the PAGE never scrolls sideways.
   */
+  const FIT_BUDGET_570 = 10
   const narrow = await measure(570)
+  const over570 = narrow.boxScrollW - narrow.boxClientW
   console.log(`  @570 : table ${narrow.tableW}px in ${narrow.boxClientW}px (scrollW ${narrow.boxScrollW}) · page ${narrow.docScrollW}/${narrow.viewportW}`)
-  const fits570 = narrow.boxScrollW <= narrow.boxClientW + 1
+  console.log(`         ${narrow.labels.map((l, i) => `${l} ${narrow.widths[i]}`).join(' · ')}`)
+  const fits570 = over570 <= FIT_BUDGET_570
+  const scrolls570 = narrow.boxScrollW <= narrow.boxClientW + 1
+    || ['auto', 'scroll'].includes(narrow.overflowX)
   const pageStill = narrow.docScrollW <= narrow.viewportW + 1
-  console.log(fits570 ? '  ✓ @570 fits with no scrollbar at all' : '  · @570 the table scrolls in its box (acceptable)')
+  console.log(over570 <= 1
+    ? '  ✓ @570 fits with no scrollbar at all'
+    : fits570
+      ? `  ✓ @570 within budget — ${over570}px over a 466px shell (ceiling ${FIT_BUDGET_570}px), scrolls in its own box`
+      : `  ✗ @570 over budget — ${over570}px, ceiling ${FIT_BUDGET_570}px. A label got wider; see the row above`)
+  console.log(scrolls570 ? '  ✓ @570 and the overflow is reachable — its own box scrolls'
+                         : `  ✗ @570 it overflows with NO scroll affordance (overflow-x: ${narrow.overflowX})`)
   console.log(pageStill ? '  ✓ @570 the PAGE does not scroll sideways' : `  ✗ @570 the page scrolls (${narrow.docScrollW} > ${narrow.viewportW})`)
 
   const tiny = await measure(360)
@@ -408,11 +454,22 @@ async function main() {
   console.log(pageStillTiny ? '  ✓ @360 the PAGE still does not scroll sideways'
                             : `  ✗ @360 the page scrolls (${tiny.docScrollW} > ${tiny.viewportW})`)
 
-  if (!(twoRows && fitsWide && pageStill && tableScrolls && pageStillTiny)) process.exitCode = 1
+  if (!(twoRows && fitsWide && fits570 && scrolls570 && pageStill && tableScrolls && pageStillTiny)) process.exitCode = 1
+  /*
+    ⚠ RE-SET THE WIDTH BEFORE EACH SHOT. These used to be taken after the last `measure()`
+    call, so 17-history-570px.png was photographed at 360px — a file named for one width
+    showing another, which is worse than no screenshot: the shot is the evidence a human
+    actually looks at, and this one quietly showed the Supplier block scrolled out of
+    frame as if that were the 570px result. Shoot each width immediately after selecting
+    it, and add the 360 shot rather than letting it masquerade as the 570 one.
+  */
+  await measure(570)
   await supplier.screenshot({ path: path.join(OUT, '17-history-570px.png'), fullPage: false })
+  await measure(360)
+  await supplier.screenshot({ path: path.join(OUT, '19-history-360px.png'), fullPage: false })
   await measure(1300)
   await supplier.screenshot({ path: path.join(OUT, '18-history-1300px.png'), fullPage: false })
-  console.log('  ✓ 17-history-570px.png, 18-history-1300px.png')
+  console.log('  ✓ 17-history-570px.png, 18-history-1300px.png, 19-history-360px.png')
   await supplier.setViewportSize({ width: 1100, height: Number(process.env.VH) || 1250 })
   if (m.cols.length !== 7) {
     console.log(`  ✗ the history table has ${m.cols.length} columns, not the seven in spec §1.2`)
