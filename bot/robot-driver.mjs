@@ -41,14 +41,8 @@
 // has generated an attendance code and started the game.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ⚠ SLICE-1 STATUS: the robot driver's SLOT 2 still drives the PLACEHOLDER game's screens
-// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
-// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
-// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
-// rewritten with the screens, not before. The server chain is covered meanwhile by
-// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { createRequire } from 'node:module'
-import { decide, isStrategyImplemented } from '../functions/lib/round/decide.js'
+import { decide } from '../functions/lib/round/decide.js'
 import { DEFAULT_ROUND_SETTINGS as S } from '../functions/lib/round/settings.js'
 
 // Playwright resolves from the repo root node_modules (installed for the harnesses);
@@ -97,22 +91,6 @@ if (SEATS % GROUP_SIZE !== 0) {
   )
 }
 
-/**
- * Fail EARLY and by name if no strategy has been written. Without this the run reaches
- * the first decision, throws from inside a browser callback, and reads as a Playwright
- * problem — which is a genuinely confusing half-hour.
- */
-if (!isStrategyImplemented()) {
-  console.error(
-    '\nROBOT MODE IS NOT WIRED YET.\n\n' +
-    'This game still ships the template\'s bot-strategy SLOT. Implement decide() in\n' +
-    'functions/src/round/decide.ts (and make isStrategyImplemented() return true, then\n' +
-    'delete it), rebuild functions, and run this again.\n\n' +
-    'The driver shell below needs no changes beyond SLOT 1 (read) and SLOT 2 (act).\n',
-  )
-  process.exit(2)
-}
-
 // "Watch" paces the robots at human speed so a class can follow along; "fast" is for
 // a smoke run. Neither affects what is decided.
 const THINK = PACE === 'watch' ? { min: 5000, max: 15000 } : { min: 700, max: 1400 }
@@ -144,11 +122,16 @@ async function readyUrlFor(seatIndex) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ▸ SLOT 1 — READ. ⚠ PLACEHOLDER_GAME (spawn Part 1).
+// ▸ SLOT 1 — READ.
 //
-// Turn the page's `window.__gameState` into whatever decide() takes. For the placeholder
-// game they are the same object, so this is the identity — a real game usually needs
-// nothing more either. Return null when the page is not on a decision yet.
+// Turn the page's `window.__gameState` into what decide() takes. For Info Sharing they
+// are the same object — the seat view the screen renders IS the seat view the brain
+// reasons over, which is the property that makes a robot run mean anything.
+//
+// ⚠ RETURN IT WHOLE, AND DO NOT "TIDY" IT. In particular do not normalise a missing
+// `demandType` to null: the Supplier's view has NO SUCH KEY, decide() tests for it by
+// presence, and a helpful `?? null` here would turn a broken reveal into a bot that
+// silently reports HIGH forever instead of one that throws.
 // ═══════════════════════════════════════════════════════════════════════════════
 async function readSeatView(page) {
   return page.evaluate(() => {
@@ -158,28 +141,30 @@ async function readSeatView(page) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ▸ SLOT 2 — ACT. ⚠ PLACEHOLDER_GAME (spawn Part 1).
+// ▸ SLOT 2 — ACT.
 //
-// Turn an action from decide() into clicks. THROUGH THE UI — see the header.
+// Turn an action from decide() into clicks. THROUGH THE UI — see the header. The test ids
+// are the ones the real decision screens render:
 //
-// One rule: wait for the control before clicking it. A robot that clicks faster than
-// the page renders produces a flaky failure that looks like a game bug, and it will be
+//   stage 1  message-choices-HIGH   message-choices-LOW      (Retailer)
+//   stage 2  production-choices-1/2/3                        (Supplier)
+//
+// One rule: wait for the control before clicking it. A robot that clicks faster than the
+// page renders produces a flaky failure that looks like a game bug, and it will be
 // investigated as one.
+//
+// ⚠ CLICK, NEVER CALL. Do not "speed this up" by invoking submitMessage/submitProduction
+// directly. The round-loop harness already proves the server; the ONLY thing this runner
+// tests that nothing else does is that the button a student presses is wired to it.
 // ═══════════════════════════════════════════════════════════════════════════════
 async function actInUi(page, action) {
-  if (action.kind === 'signal') {
-    const sel = `[data-testid="signal-choices-${action.signal}"]`
-    await page.waitForSelector(sel, { timeout: 15000 })
-    await page.click(sel)
-    return
-  }
-  if (action.kind === 'respond') {
-    const sel = `[data-testid="quantity-choices-${action.quantity}"]`
-    await page.waitForSelector(sel, { timeout: 15000 })
-    await page.click(sel)
-    return
-  }
-  throw new Error(`actInUi: unknown action kind ${JSON.stringify(action)}`)
+  const sel =
+    action.kind === 'message'    ? `[data-testid="message-choices-${action.message}"]`
+  : action.kind === 'production' ? `[data-testid="production-choices-${action.production}"]`
+  : null
+  if (!sel) throw new Error(`actInUi: unknown action kind ${JSON.stringify(action)}`)
+  await page.waitForSelector(sel, { timeout: 15000 })
+  await page.click(sel)
 }
 
 // ── the loop (SHARED — do not edit per game) ───────────────────────────────────

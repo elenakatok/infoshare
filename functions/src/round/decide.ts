@@ -1,12 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE BOT BRAIN — ONE `decide()`, CANONICALLY HERE, INSIDE functions/.
 //
-// ⚠ THIS IS A SLOT, NOT A BOT. `decide()` throws until the spawning game writes it.
-// That is deliberate: per Extraction Spec §2.2 what generalises across stage games is
-// the DRIVER SHELL — windows, tiling, drive-to-ready, the read→decide→act→wait loop,
-// the launcher button. What never generalises is the strategy and the read/act wiring.
-// Scaffolding a working bot here would mean shipping a strategy for a game that does
-// not exist yet, and a plausible-looking wrong bot is worse than an absent one.
+// ⚠ THE TEMPLATE'S SLOT, NOW FILLED. `isStrategyImplemented()` is DELETED, not left
+// returning true — a permanent capability check invites a silent "bots are off today"
+// path, and a bot seat that quietly does nothing is indistinguishable from a student who
+// never turned up. Callers that used it now simply call decide().
 //
 // ── WHY THIS FILE LIVES IN functions/src/round/ ───────────────────────────────
 // Because TWO RUNNERS SHARE ONE BRAIN:
@@ -37,34 +35,49 @@ import type { SeatView, SeatAction } from './spec'
 /**
  * Choose this seat's action for the stage it currently owes.
  *
- * PURE. Same view + same settings ⇒ same action, always. Any randomness must be drawn
- * from a seeded stream derived from the view (round, seat), never from Math.random —
- * otherwise a replay of a class diverges and no harness assertion about a bot can be
- * pinned.
+ * PURE. Same view + same settings ⇒ same action, always. Randomness is drawn from a
+ * seeded stream derived from the view (round, seat), never from Math.random — otherwise
+ * a replay of a class diverges and no harness assertion about a bot can be pinned.
  *
- * @throws until the spawning game implements it.
+ * ── THE STRATEGY, AND WHY IT IS THIS ONE ─────────────────────────────────────
+ * A bot exists so a half-full class can still play, and so robot mode can drive the real
+ * screens unattended. It is NOT a model of optimal play and must not be quoted as the
+ * game's prediction — so it is deliberately simple, and deliberately not a saint.
+ *
+ *   RETAILER   tells the truth about HIGH always (there is never a reason not to), and
+ *              tells the truth about LOW most of the time, misreporting sometimes.
+ *              A bot that NEVER misreports would give every human Supplier a game against
+ *              a provably honest partner — the one condition the experiment is not about,
+ *              and the human would learn to believe everything within three rounds.
+ *   SUPPLIER   believes the report: 3 lots on HIGH, 1 on LOW.
+ *
+ * ⚠ THE RETAILER BRANCH READS ITS OWN `demandType`, WHICH IT IS ALLOWED TO SEE. The
+ * Supplier branch reads `currentMessage` AND NOTHING ELSE, and must never reach for
+ * demandType as a fallback. The server bot runs where nothing is ever on the wire, so
+ * the harness leak assertions CANNOT catch a peeking bot — review of this function is
+ * the only defence that exists.
  */
-export function decide(_view: SeatView, _settings: RoundSettings): SeatAction {
-  throw new Error(
-    '[infoshare] decide() is not implemented. This is the bot-strategy SLOT — ' +
-    'the template ships the driver shell and the wiring, never a strategy. Implement ' +
-    'it in functions/src/round/decide.ts (the canonical location: the server bot ' +
-    'runner and the browser robot driver both read THIS function, and there must ' +
-    'never be a second copy). See Spawn_A_New_Game_Playbook §6 and the game spec\'s ' +
-    'bot-strategy section for the behaviour to write.',
-  )
-}
+export function decide(view: SeatView, _settings: RoundSettings): SeatAction {
+  const rng = makeRng(view.round * 1000 + view.seat)
 
-/**
- * Has a strategy been written yet? Lets the server runner and the robot driver fail
- * with one clear sentence instead of an unhandled throw in the middle of a class.
- *
- * REMOVE THIS once `decide()` is implemented — a permanent capability check invites
- * a silent "bots are off today" path, and a bot seat that quietly does nothing is
- * indistinguishable from a student who did not turn up.
- */
-export function isStrategyImplemented(): boolean {
-  return false
+  if (view.owes === 'message') {
+    // Presence, not nullishness — if the reveal rule ever changed, fail loudly rather
+    // than reporting a confident HIGH derived from a missing field.
+    if (!('demandType' in view) || view.demandType === undefined) {
+      throw new Error('[infoshare] decide(): the retailer seat cannot see demandType — ' +
+        'the reveal rule or the seat view changed. Refusing to guess a report.')
+    }
+    const truth = view.demandType
+    const misreport = truth === 'LOW' && rng() < 0.25
+    return { kind: 'message', message: misreport ? 'HIGH' : truth }
+  }
+
+  if (view.owes === 'production') {
+    // Believe the report. Nothing else is read here — see the warning above.
+    return { kind: 'production', production: view.currentMessage === 'HIGH' ? 3 : 1 }
+  }
+
+  throw new Error(`[infoshare] decide(): nothing is owed (owes=${String(view.owes)})`)
 }
 
 // ── seeded randomness, for a strategy that needs it ───────────────────────────

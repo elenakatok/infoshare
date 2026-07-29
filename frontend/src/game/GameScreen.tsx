@@ -9,9 +9,10 @@ import {
 } from '../api'
 import HistoryTable from './HistoryTable'
 import ClockBar from './ClockBar'
+import InformationPanel from './InformationPanel'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE STUDENT GAME SCREEN — ⚠ PLACEHOLDER_GAME (spawn Part 1).
+// THE STUDENT GAME SCREEN — the two decision screens (spec §1.1).
 //
 // ⚠ THIS COMPONENT DECIDES NOTHING. It polls `getRoundView`, renders what came back,
 // and posts intents. It does not compute a payoff to "show the number sooner", does not
@@ -44,6 +45,7 @@ export default function GameScreen({
   const [busy, setBusy] = useState(false)
   /** The round whose result screen is showing, or null when playing. */
   const [showingResultFor, setShowingResultFor] = useState<number | null>(null)
+  const [youContinued, setYouContinued] = useState(false)
   const lastSeenRound = useRef<number | null>(null)
 
   const refresh = useCallback(async () => {
@@ -55,6 +57,7 @@ export default function GameScreen({
       const completed = r.view.history.length
       if (lastSeenRound.current !== null && completed > lastSeenRound.current) {
         setShowingResultFor(completed)
+        setYouContinued(false)
       }
       lastSeenRound.current = completed
     } catch (e) {
@@ -122,16 +125,29 @@ export default function GameScreen({
     const policy: AdvancePolicy = data.clock_enabled
       ? { kind: 'classroom', deadlineMs: data.stage_deadline_ms }
       : { kind: 'online' }
+    /*
+      ⚠ seatsTotal 1, NOT 2 — and that is not a bug being papered over.
+      The result screen is a LOCAL view of an ALREADY-RESOLVED round. Nothing about the
+      group waits on it: the next stage opens when both seats SUBMIT, which they cannot do
+      until they dismiss this screen anyway. There is no server-side record of who has
+      pressed Continue, so passing seatsTotal 2 would render a permanent "Waiting on 2 of
+      2" that no event can ever clear — a caption describing a synchronisation that does
+      not exist. Per-seat is what the code does, so per-seat is what it says.
+
+      Both branches survive this: classroom still auto-advances when the deadline passes
+      (the timer arm is independent of the count), and online still advances on Continue
+      and nothing else.
+    */
     return (
       <Shell>
         <RoundResultsScreen
           title={`Round ${row.round} result`}
           policy={policy}
-          seatsTotal={2}
-          seatsContinued={0}
-          youContinued={false}
-          onContinue={() => setShowingResultFor(null)}
-          onAdvance={() => setShowingResultFor(null)}
+          seatsTotal={1}
+          seatsContinued={youContinued ? 1 : 0}
+          youContinued={youContinued}
+          onContinue={() => setYouContinued(true)}
+          onAdvance={() => { setYouContinued(false); setShowingResultFor(null) }}
           history={<HistoryTable history={v.history} viewerRole={v.role} />}
         >
           <p data-testid="result-line">
@@ -178,36 +194,116 @@ export default function GameScreen({
       )}
 
       {/*
-        ⚠ PRESENCE, NOT NULLISHNESS. `'state' in v` — never `v.state != null` and never
-        `v.state ?? 'unknown'`. When the reveal rule withholds the draw the KEY IS
-        ABSENT, and a nullish test written the easy way turns "hidden" into a rendered
-        value the moment someone changes the server to send null.
+        ═══════════════════════════════════════════════════════════════════════
+        DECISION SCREEN 1 — THE RETAILER (stage `message`).
+        ═══════════════════════════════════════════════════════════════════════
+
+        ⚠ PRESENCE, NOT NULLISHNESS. `'demandType' in v` — never `v.demandType != null`
+        and never `v.demandType ?? 'unknown'`. When the reveal rule withholds the draw the
+        KEY IS ABSENT, and a nullish test written the easy way turns "hidden" into a
+        rendered value the moment someone changes the server to send null.
+
+        The true type is the LOUDEST thing on this screen, deliberately. The Retailer's
+        whole decision is what to do with a fact only they hold; burying it in a sentence
+        makes the game about reading carefully instead of about choosing.
       */}
       {'demandType' in v && (
-        <p data-testid="private-state" style={{ padding: spacing.gapSm, background: '#fef3c7', borderRadius: 4 }}>
-          Only you can see this: the true demand type this round is <strong>{v.demandType}</strong>.
-        </p>
+        <section
+          data-testid="private-state"
+          style={{
+            margin: `${spacing.gapMd} 0`, padding: spacing.gapMd, borderRadius: 8,
+            border: `2px solid ${v.demandType === 'HIGH' ? '#D38626' : '#0f766e'}`,
+            background: v.demandType === 'HIGH' ? '#fdf5e9' : '#effaf7',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: typography.sizeSm, color: colors.textSecondary,
+                      textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Only you can see this
+          </p>
+          <p style={{ margin: '0.15rem 0 0', fontSize: '2rem', fontWeight: 800, lineHeight: 1.1,
+                      color: v.demandType === 'HIGH' ? '#8a5410' : '#0b544d' }}>
+            Demand is {v.demandType}
+          </p>
+          <p style={{ margin: '0.3rem 0 0', fontSize: typography.sizeSm, color: colors.textSecondary }}>
+            This is the true demand type for round {v.round}. The Supplier has not been told it.
+          </p>
+        </section>
       )}
 
       {v.owes === 'message' && (
-        <Choices
-          label="Report the demand type to the Supplier. It does not have to be true."
-          testId="message-choices"
-          options={[{ value: 'HIGH', label: 'HIGH' }, { value: 'LOW', label: 'LOW' }]}
-          disabled={busy}
-          onPick={(val) => act(() => submitMessage(groupId, val as DemandType))}
-        />
+        <>
+          {/*
+            ⚠ DO NOT SOFTEN THIS COPY. The Retailer is being told, in plain words, that
+            they may report a type that is not the one they were shown, and that nothing
+            checks it at the time. That is not a loophole in the game — it is the game.
+            A student who believes the report is supposed to be true is not playing the
+            same experiment as the one who does not, and the class data becomes a mixture
+            of two populations. "Please report honestly", "your report should reflect…",
+            or any wording that implies an obligation, breaks the design.
+          */}
+          <Choices
+            label={`Report a demand type to the Supplier.`}
+            help={
+              <>
+                <strong>Your report does not have to be true.</strong> You may report
+                either type, whatever you were just shown. Nothing stops you and nothing
+                checks it now — the Supplier sees only your report when they choose their
+                production. They will learn the true type after the round is over.
+              </>
+            }
+            testId="message-choices"
+            options={[
+              { value: 'HIGH', label: 'Report HIGH', tint: '#D38626' },
+              { value: 'LOW', label: 'Report LOW', tint: '#0f766e' },
+            ]}
+            disabled={busy}
+            onPick={(val) => act(() => submitMessage(groupId, val as DemandType))}
+          />
+        </>
       )}
 
+      {/*
+        ═══════════════════════════════════════════════════════════════════════
+        DECISION SCREEN 2 — THE SUPPLIER (stage `production`).
+        ═══════════════════════════════════════════════════════════════════════
+
+        ⚠ THIS BRANCH RENDERS NOTHING ABOUT THE TRUE TYPE — not the value, not a
+        placeholder, not a greyed-out box saying "hidden". `v.demandType` is ABSENT from
+        the payload here, and the block above is the only thing that reads it. An
+        "unknown" chip would be worse than nothing: it advertises that the field exists
+        and invites a student to open the network tab looking for it.
+      */}
       {v.owes === 'production' && (
         <>
-          <p data-testid="message-received">
-            The Retailer reported <strong>{v.currentMessage ?? '—'}</strong>.
-          </p>
+          <section
+            data-testid="message-received"
+            style={{ margin: `${spacing.gapMd} 0`, padding: spacing.gapMd, borderRadius: 8,
+                     border: `2px solid ${colors.borderMid}`, background: colors.white }}
+          >
+            <p style={{ margin: 0, fontSize: typography.sizeSm, color: colors.textSecondary,
+                        textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              The Retailer reported
+            </p>
+            <p data-testid="reported-type"
+               style={{ margin: '0.15rem 0 0', fontSize: '2rem', fontWeight: 800, lineHeight: 1.1,
+                        color: v.currentMessage === 'HIGH' ? '#8a5410' : '#0b544d' }}>
+              {v.currentMessage ?? '—'}
+            </p>
+            <p style={{ margin: '0.3rem 0 0', fontSize: typography.sizeSm, color: colors.textSecondary }}>
+              This is what the Retailer chose to tell you. It may or may not be the true
+              demand type — you will find out after you have produced.
+            </p>
+          </section>
           <Choices
             label="Choose your production, in lots."
+            help={
+              <>
+                Every lot costs you to make whether or not it sells. You keep the revenue
+                on lots that sell. Open <em>Show the numbers</em> for the full table.
+              </>
+            }
             testId="production-choices"
-            options={[1, 2, 3].map((n) => ({ value: String(n), label: String(n) }))}
+            options={[1, 2, 3].map((n) => ({ value: String(n), label: `Produce ${n}` }))}
             disabled={busy}
             onPick={(val) => act(() => submitProduction(groupId, Number(val) as Lots))}
           />
@@ -219,6 +315,13 @@ export default function GameScreen({
           Waiting for the other player… ({v.pendingCount} still to decide)
         </p>
       )}
+
+      {/*
+        THE INFORMATION PANEL (spec §1.4) — shown whenever a decision is owed, which is
+        both stages and therefore both roles. Keyed on `owes`, NOT on role: keying it on
+        role is how one of the two screens quietly loses it.
+      */}
+      {v.owes !== null && <InformationPanel />}
 
       {error && <p role="alert" data-testid="action-error" style={{ color: '#b91c1c' }}>{error}</p>}
 
@@ -237,17 +340,22 @@ export default function GameScreen({
  * server and explained to the student. Do not "improve" this into a text field.
  */
 function Choices({
-  label, options, onPick, disabled, testId,
+  label, help, options, onPick, disabled, testId,
 }: {
   label: string
-  options: { value: string; label: string }[]
+  help?: React.ReactNode
+  options: { value: string; label: string; tint?: string }[]
   onPick: (value: string) => void
   disabled: boolean
   testId: string
 }) {
   return (
     <div data-testid={testId} style={{ margin: `${spacing.gapMd} 0` }}>
-      <p style={{ marginBottom: spacing.gapSm }}>{label}</p>
+      <p style={{ margin: `0 0 0.2rem`, fontWeight: 700 }}>{label}</p>
+      {help && (
+        <p style={{ margin: `0 0 ${spacing.gapSm}`, fontSize: typography.sizeSm,
+                    color: colors.textSecondary, maxWidth: '42rem' }}>{help}</p>
+      )}
       <div style={{ display: 'flex', gap: spacing.gapSm, flexWrap: 'wrap' }}>
         {options.map((o) => (
           <button
@@ -255,7 +363,13 @@ function Choices({
             data-testid={`${testId}-${o.value}`}
             disabled={disabled}
             onClick={() => onPick(o.value)}
-            style={{ padding: '0.6rem 1.2rem', fontSize: '1rem', cursor: disabled ? 'wait' : 'pointer' }}
+            style={{
+              padding: '0.65rem 1.4rem', fontSize: '1rem', fontWeight: 700,
+              cursor: disabled ? 'wait' : 'pointer', borderRadius: 6,
+              border: `2px solid ${o.tint ?? colors.borderMid}`,
+              background: colors.white, color: o.tint ?? colors.text,
+              opacity: disabled ? 0.6 : 1,
+            }}
           >
             {o.label}
           </button>

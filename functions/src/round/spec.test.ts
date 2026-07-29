@@ -9,6 +9,8 @@ import {
   validateMessage, validateProduction, salesOf,
 } from './resolver'
 import { makeGameSpec, drawLots, FIELD_DEMAND_TYPE, FIELD_ACTUAL_DEMAND, STAGE_MESSAGE, STAGE_PRODUCTION } from './spec'
+import { decide } from './decide'
+import { DEFAULT_ROUND_SETTINGS } from './settings'
 import { openGame, submit, buildSeatView, assertValidStageGameSpec, makeRng } from '@mygames/stage-engine'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -303,5 +305,57 @@ describe('timeout defaults — spec §6.1, invoked by the engine', () => {
   it('every stage of a clocked game declares a default — the engine has no fallback', () => {
     expect(spec().hasClock).toBe(true)
     for (const stage of spec().stages) expect(typeof stage.defaultFor).toBe('function')
+  })
+})
+
+// ── the bot brain ──────────────────────────────────────────────────────────────
+
+describe('decide', () => {
+  const V = (over: Record<string, unknown>) => ({
+    seat: 0, role: 'retailer', status: 'in_progress', round: 1, numRounds: 10,
+    stage: 'message', owes: 'message', currentMessage: null, history: [], pendingCount: 1,
+    ...over,
+  }) as never
+
+  it('is deterministic — same view, same action', () => {
+    const v = V({ demandType: 'LOW' })
+    expect(decide(v, DEFAULT_ROUND_SETTINGS)).toEqual(decide(v, DEFAULT_ROUND_SETTINGS))
+  })
+
+  it('never misreports a HIGH draw — there is never a reason to', () => {
+    for (let round = 1; round <= 200; round++) {
+      const a = decide(V({ round, demandType: 'HIGH' }), DEFAULT_ROUND_SETTINGS)
+      expect(a).toEqual({ kind: 'message', message: 'HIGH' })
+    }
+  })
+
+  it('misreports LOW sometimes but not usually — a saint bot is the wrong partner', () => {
+    let lies = 0
+    for (let round = 1; round <= 200; round++) {
+      const a = decide(V({ round, demandType: 'LOW' }), DEFAULT_ROUND_SETTINGS) as { message: string }
+      if (a.message === 'HIGH') lies++
+    }
+    // Both bounds matter: 0 would mean a provably honest partner, and a majority would
+    // mean the report carried no information at all.
+    expect(lies).toBeGreaterThan(0)
+    expect(lies).toBeLessThan(100)
+  })
+
+  /**
+   * ⚠ THE PEEK TEST. The server bot runs where nothing is on the wire, so no leak
+   * assertion in any harness can catch a bot that reads the true type in the Supplier's
+   * branch. This is the only place it is checked: the view handed in has NO demandType
+   * key at all, and the action must still be decided from currentMessage.
+   */
+  it('the supplier branch decides from the report alone', () => {
+    const high = decide(V({ role: 'supplier', seat: 1, owes: 'production', currentMessage: 'HIGH' }), DEFAULT_ROUND_SETTINGS)
+    const low = decide(V({ role: 'supplier', seat: 1, owes: 'production', currentMessage: 'LOW' }), DEFAULT_ROUND_SETTINGS)
+    expect(high).toEqual({ kind: 'production', production: 3 })
+    expect(low).toEqual({ kind: 'production', production: 1 })
+  })
+
+  it('refuses to guess a report when the retailer cannot see the draw', () => {
+    // Absence, not null — the shape a broken reveal would actually produce.
+    expect(() => decide(V({}), DEFAULT_ROUND_SETTINGS)).toThrow(/cannot see demandType/)
   })
 })

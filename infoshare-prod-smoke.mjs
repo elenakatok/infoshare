@@ -19,12 +19,6 @@
 // classroom project (the gradebook read).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ⚠ SLICE-1 STATUS: the production smoke still drives the PLACEHOLDER game's screens
-// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
-// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
-// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
-// rewritten with the screens, not before. The server chain is covered meanwhile by
-// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { chromium } from 'playwright'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { createRequire } from 'node:module'
@@ -210,6 +204,7 @@ async function main() {
 
   banner('7–9. PLAY THREE ROUNDS THROUGH THE UI')
   let rounds = 0
+  let wireChecks = 0
   for (let round = 1; round <= 3; round++) {
     for (let step = 0; step < 6; step++) {
       let acted = false
@@ -221,8 +216,55 @@ async function main() {
         }
         const v = await seatView(p).catch(() => null)
         if (!v || !v.owes) continue
-        const sel = v.owes === 'signal' ? '[data-testid="signal-choices-up"]' : '[data-testid="quantity-choices-2"]'
+
+        /*
+          ⚠ CLICKED, NOT CALLED — and the value clicked is chosen from what THIS SEAT can
+          see, which is the point of driving the UI at all. The Retailer misreports in
+          even rounds; a smoke where every report is truthful would pass against a build
+          that ignored the message entirely and produced on the true type.
+
+          The Supplier picks from `currentMessage`, the field the screen shows it. If the
+          reveal ever broke open and handed the Supplier the true type, this loop would
+          still click the same buttons — which is why the ABSENCE assertion below is a
+          separate check and not folded into the play loop.
+        */
+        let sel
+        if (v.owes === 'message') {
+          const lie = round % 2 === 0
+          const say = lie ? (v.demandType === 'HIGH' ? 'LOW' : 'HIGH') : v.demandType
+          sel = `[data-testid="message-choices-${say}"]`
+        } else {
+          sel = `[data-testid="production-choices-${v.currentMessage === 'HIGH' ? 3 : 1}"]`
+        }
         if (await p.locator(sel).count()) { await p.click(sel).catch(() => {}); acted = true; await sleep(900) }
+
+        /*
+          THE WIRE, IN PRODUCTION, AGAINST THE REAL SCREEN.
+
+          ⚠ ABSENCE, NOT EMPTINESS — `'demandType' in view === false`, never
+          `view.demandType == null`. Null is a value; it announces that a field exists and
+          is currently empty, which is an invitation to watch for the round in which it
+          fills. Both `in` and `Object.keys` are asserted because they fail differently: a
+          getter-materialised key passes `in` and fails keys, a key set to undefined does
+          the reverse.
+
+          Scoped to an OPEN round (`history.length < round`) for the same reason as the
+          e2e: the reveal is at resolution and is permanent, so after a round is over the
+          Supplier is SUPPOSED to see the true type. The counter below keeps the narrowing
+          honest.
+        */
+        if (v.history.length < v.round) {
+          const keys = Object.keys(v)
+          check(!('actual_demand' in v) && !keys.includes('actual_demand'),
+            `wire: actual_demand is absent from the ${v.role} view mid-round`)
+          wireChecks++
+          if (v.role === 'supplier') {
+            check(!('demandType' in v) && !keys.includes('demandType') &&
+                  !('demand_type' in v) && !keys.includes('demand_type'),
+              'wire: the true demand type is absent from the SUPPLIER view mid-round')
+            wireChecks++
+          }
+        }
       }
       if (!acted) await sleep(1200)
     }
@@ -231,11 +273,15 @@ async function main() {
     console.log(`     after round ${round}: history = ${rounds}`)
   }
   check(rounds === 3, `7. three rounds resolved through the UI (history rows: ${rounds})`)
+  // A narrowed predicate that excluded every round would make the block above vacuous.
+  check(wireChecks >= 6, `7. the wire assertions actually ran against live screens (${wireChecks})`)
 
   const vEnd = await seatView(pages[0]).catch(() => null)
   check(vEnd?.status === 'finished', '8. the student screen reports the game finished')
   const hist = await pages[0].locator('[data-testid="game-history"]').count()
   check(hist > 0, '9. the history table is rendered on the student page')
+  const cols = await pages[0].locator('[data-testid="game-history"] thead th').count()
+  check(cols === 7, `9. with the seven columns from the spec (got ${cols})`)
 
   banner('10–11. SCORE & RECORD, AND THE GRADEBOOK READ CLASSROOM-SIDE')
   const sc = await fn('scoreAndRecord', { token })

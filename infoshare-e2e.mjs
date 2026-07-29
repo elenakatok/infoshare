@@ -28,12 +28,6 @@
 //   node infoshare-e2e.mjs        (env KEEP=1 leaves the stack up)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ⚠ SLICE-1 STATUS: the e2e harness still drives the PLACEHOLDER game's screens
-// (signal/respond, up/down, the old test ids). Slice 1 replaced the server logic —
-// submitSignal/submitRespond are gone, submitMessage/submitProduction took their place —
-// but the SCREENS are slice 2, so there is nothing yet for this file to drive. It is
-// rewritten with the screens, not before. The server chain is covered meanwhile by
-// infoshare-round-loop.mjs (41/41) and src/round/spec.test.ts (35/35).
 import { openSync } from 'node:fs'
 import { spawn, execSync } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -197,28 +191,111 @@ const matchNow      = (gid) => callFn('triggerMatching', asDev(gid, {}))
 const startClass    = (gid) => callFn('startAllGroups', asDev(gid, {}))
 const dashboard     = (gid) => callFn('getGameDashboard', asDev(gid, {}))
 const roundView     = (gid, pid, g) => callFn('getRoundView', asStudent(gid, pid, { group_id: g }))
-const submitSignal  = (gid, pid, g, s) => callFn('submitMessage', asStudent(gid, pid, { group_id: g, message: s }))
-const submitRespond = (gid, pid, g, q) => callFn('submitProduction', asStudent(gid, pid, { group_id: g, production: q }))
+const submitMessage    = (gid, pid, g, m) => callFn('submitMessage', asStudent(gid, pid, { group_id: g, message: m }))
+const submitProduction = (gid, pid, g, q) => callFn('submitProduction', asStudent(gid, pid, { group_id: g, production: q }))
 
 /** Instructor: "Score & Record" — the button that pushes to the gradebook. */
 const scoreAndRecord = (gid) => callFn('scoreAndRecord',
   { _dev: { game_instance_id: gid, callback_url: CB, callback_secret: 'test' } })
 
-/** Play one round for a group, whoever holds which seat. */
-async function playRound(gid, groupId, pids) {
-  for (const pid of pids) {
-    const v = await roundView(gid, pid, groupId)
-    if (!v.ok) continue
-    const { owes, role } = v.result.view
-    if (owes === 'signal') await submitSignal(gid, pid, groupId, role === 'retailer' ? 'up' : 'up')
-    else if (owes === 'respond') await submitRespond(gid, pid, groupId, 2)
+/**
+ * THE WIRE ASSERTION — run against the REAL seat view, every round, for every seat.
+ *
+ * ⚠ ABSENCE, NOT EMPTINESS. A hidden field's KEY must not be on the wire at all. The
+ * test is `'demand_type' in view === false`, never `view.demand_type == null` — null is
+ * a VALUE, it says "there is a field here and it is empty", and a Supplier reading the
+ * network tab learns the field exists and can start guessing when it will be populated.
+ * `Object.keys` is asserted alongside `in` because the two fail differently: `in` walks
+ * the prototype chain, so a key materialised by a getter passes `in` and fails keys, and
+ * a key set to undefined fails `in` and passes keys. Both, or neither is worth having.
+ *
+ * Returns the number of assertions made so a caller can prove it actually ran — an
+ * assertion helper that silently checks nothing is the classic false green.
+ */
+function assertNoLeak(view, role, where) {
+  /*
+    ⚠ ONLY WHILE THE ROUND IS STILL OPEN — and this is a rule, not an exemption.
+
+    The reveal is `revealAt: 'resolution'`, which is INCLUSIVE and PERMANENT: the instant
+    a round resolves, the true type becomes visible to BOTH seats and stays visible. That
+    is not a leak, it is the mechanism — a report that did not match is discoverable one
+    round later, and without that there is no reputation and no game.
+
+    So the window in which hiding means anything is exactly: this round has not resolved
+    yet, i.e. `history.length < round`. After the FINAL round nothing new opens, so the
+    view sits permanently on a resolved round and the true type is legitimately there.
+
+    An earlier version of this helper asserted absence unconditionally and failed on round
+    3 of 3 — the assertion was wrong, not the server. Narrowing it is only safe because
+    the caller counts the assertions and requires a floor; a predicate that quietly
+    excluded every round would otherwise turn this whole block green by checking nothing.
+  */
+  const roundIsOpen = view.history.length < view.round
+  if (!roundIsOpen) return 0
+
+  const keys = Object.keys(view)
+  let n = 0
+
+  // `actual_demand` is hidden from BOTH seats until the round resolves — nobody may see
+  // the realised draw while a decision is still open.
+  check(!('actual_demand' in view), `${where}: actual_demand absent from the ${role} view (in)`)
+  check(!keys.includes('actual_demand'), `${where}: actual_demand absent from the ${role} view (keys)`)
+  n += 2
+
+  if (role === 'supplier') {
+    // The whole game. The Supplier must not be able to see what the Retailer was shown.
+    check(!('demand_type' in view), `${where}: demand_type absent from the supplier view (in)`)
+    check(!keys.includes('demand_type'), `${where}: demand_type absent from the supplier view (keys)`)
+    // Nor under the camelCase name the screen reads — the reveal happens server-side, but
+    // a hand-written view mapper is exactly where a second, unfiltered copy appears.
+    check(!('demandType' in view), `${where}: demandType absent from the supplier view (in)`)
+    check(!keys.includes('demandType'), `${where}: demandType absent from the supplier view (keys)`)
+    n += 4
   }
-  // second pass: the stage that opened when the first closed
-  for (const pid of pids) {
-    const v = await roundView(gid, pid, groupId)
-    if (!v.ok) continue
-    if (v.result.view.owes === 'respond') await submitRespond(gid, pid, groupId, 2)
-    else if (v.result.view.owes === 'signal') await submitSignal(gid, pid, groupId, 'up')
+  return n
+}
+
+let leakChecks = 0
+let revealsAfter = 0
+
+/**
+ * Play one round for a group, whoever holds which seat.
+ *
+ * ⚠ TWO PASSES, BECAUSE THE STAGES ARE SEQUENTIAL. The Supplier owes nothing until the
+ * Retailer's message closes stage 1 — a single pass would find `owes: null` for the
+ * Supplier and silently play half a round, and the round counter would never advance.
+ *
+ * The Retailer MISREPORTS in even rounds. A harness where every report is truthful never
+ * exercises the case the game is about, and every leak assertion below would still pass
+ * on a build that simply echoed the true type as the message.
+ */
+async function playRound(gid, groupId, pids, round) {
+  for (const pass of [1, 2]) {
+    for (const pid of pids) {
+      const v = await roundView(gid, pid, groupId)
+      if (!v.ok) continue
+      const { owes, role, demandType } = v.result.view
+
+      leakChecks += assertNoLeak(v.result.view, role, `round ${round} pass ${pass}`)
+      if (role === 'supplier') {
+        revealsAfter += v.result.view.history.filter(
+          (h) => h.demandType === 'HIGH' || h.demandType === 'LOW').length
+      }
+
+      if (owes === 'message') {
+        // The Retailer can see the true type — that is the one field they are allowed.
+        check(demandType === 'HIGH' || demandType === 'LOW',
+          `round ${round}: the retailer CAN see the true type (${demandType})`)
+        leakChecks += 1
+        const lie = round % 2 === 0
+        const msg = lie ? (demandType === 'HIGH' ? 'LOW' : 'HIGH') : demandType
+        await submitMessage(gid, pid, groupId, msg)
+      } else if (owes === 'production') {
+        // Believe the report: 3 lots on HIGH, 1 on LOW. Enough for a truthful and a
+        // misleading round to produce visibly different profits.
+        await submitProduction(gid, pid, groupId, v.result.view.currentMessage === 'HIGH' ? 3 : 1)
+      }
+    }
   }
 }
 
@@ -291,7 +368,7 @@ async function main() {
       byGroup[g.group_id] = Object.values(g.participants_by_role ?? {}).flat()
     }
     for (let r = 1; r <= 3; r++) {
-      for (const g of groups) await playRound(gid, g.group_id, byGroup[g.group_id] ?? [])
+      for (const g of groups) await playRound(gid, g.group_id, byGroup[g.group_id] ?? [], r)
     }
     const gEnd = (await dashboard(gid)).result?.groups ?? []
     check(gEnd.length === 2 && gEnd.every((g) => g.status === 'finished'),
@@ -374,7 +451,37 @@ async function main() {
     // The arrived[] fix (game-server 0.22.0) — presence, not absence.
     check(orep.ok && orep.result.students.some((s) => s.arrived === true),
       '4. arrivals are RECORDED, not reported as "not recorded"')
+
+    // 5. PLAY IT OUT — the online path must reach the gradebook too, not just the game
+    // screen. Stopping at "a group opened" would leave the entire online scoring path
+    // unexercised, and online is the mode nobody is watching when it breaks.
+    const pids = firstGroup.occupants.map((o) => o.participant_id)
+    for (let r = 1; r <= 3; r++) await playRound(gid, firstGroup.group_id, pids, r)
+    const dEnd = await dashboard(gid)
+    const fin = dEnd.ok ? dEnd.result.groups.filter((g) => g.status === 'finished').length : 0
+    check(fin >= 1, `5. the online group played all 3 rounds to completion (${fin} finished)`)
+
+    // 6. ⚠ AND THE PUSH LANDS. Same assertion as the classroom path — read at the
+    // classroom, not from the tick in our own UI.
+    pushed = []
+    const sc = await scoreAndRecord(gid)
+    await sleep(800)
+    check(sc.ok, `6. scoreAndRecord (online) — ${sc.ok ? `scored ${sc.result.scored}` : sc.error}`)
+    check(pushed.length >= 2, `6. gradebook records LANDED at the classroom from the ONLINE path (got ${pushed.length})`)
+    check(pushed.every((p) => typeof p.normalized_score === 'number'),
+      '6. every online pushed record carries a normalized score')
   }
+
+  // ⚠ THE HELPER MUST HAVE RUN. Every leak assertion lives inside assertNoLeak, and a
+  // helper that is never reached passes vacuously — `[].every()` is true. Counting the
+  // assertions and requiring a floor is what makes the block above evidence rather than
+  // decoration.
+  check(leakChecks >= 40, `WIRE: the leak assertions actually ran (${leakChecks} made across both paths)`)
+  // ⚠ AND THE COMPLEMENT. Hiding is trivially achievable by never revealing anything, and
+  // every assertion above would still pass on a game where the Supplier NEVER learns the
+  // truth — which would delete the entire mechanism. `revealsAfter` proves the other half.
+  check(revealsAfter > 0,
+    `WIRE: and the truth DOES reach the supplier once a round is over (${revealsAfter} rounds seen)`)
 
   banner(`RESULT — ${PASS} passed, ${FAIL} failed`)
   return FAIL === 0
