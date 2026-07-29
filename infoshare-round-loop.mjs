@@ -156,11 +156,19 @@ async function main() {
     check(!!rm.retailer && !!rm.supplier && rm.retailer !== rm.supplier,
       'roles assigned LATE — exactly one retailer and one supplier, and they differ')
 
-    for (let r = 1; r <= 3; r++) await playRound(gid, rm, 'HIGH', 2)
+    /*
+      ⚠ THE ROUND COUNT IS READ FROM THE GAME, NOT TYPED HERE. This said `r <= 3`, the
+      placeholder's count, and broke the moment the real default became 10 — the same
+      literal-in-two-places bug that shipped "Round 2 of 3" to a live dashboard. Asking
+      the seat view means the harness cannot disagree with the game about how long it is.
+    */
+    const total = (await sview(gid, rm.retailer)).result.view.numRounds
+    check(typeof total === 'number' && total > 0, `the game reports its length (${total})`)
+    for (let r = 1; r <= total; r++) await playRound(gid, rm, 'HIGH', 2)
 
     const v = await sview(gid, rm.retailer)
-    check(v.ok && v.result.view.status === 'finished', 'game finished after 3 rounds')
-    check(v.ok && v.result.view.history.length === 3, 'history holds exactly 3 resolved rounds')
+    check(v.ok && v.result.view.status === 'finished', `game finished after ${total} rounds`)
+    check(v.ok && v.result.view.history.length === total, `history holds exactly ${total} resolved rounds`)
     check(v.ok && v.result.view.history.every((h) => !h.defaulted.retailer && !h.defaulted.supplier),
       'no round is marked defaulted when both seats acted')
   }
@@ -327,6 +335,46 @@ async function main() {
       // legitimate rejection — proves the function is deployed, which is all this asserts.
       const exists = !(r.error ?? '').includes('http 404')
       check(exists, `(M1) shared UI invokes '${name}' — and this game exports it`)
+    }
+
+    /*
+      (M1b) THE MIRROR: a callable with NO BUTTON.
+
+      ⚠ M1 catches a button with no callable. This catches the opposite, and the opposite
+      is what actually shipped: `groupParticipantsOnline`, `getOnlineGroups`, `moveSeat`
+      and `topUpGroupWithBots` were exported by the frontend and CALLED BY NOTHING, while
+      the control strip told the instructor to press a "Group participants" button that
+      did not exist. An online class could not be run at all, and every harness was green
+      because they all drive those callables DIRECTLY.
+
+      So: every ONLINE callable this game's frontend wraps must have a caller in the UI,
+      or be named here as deliberately unwired. A wrapper with no caller is either a dead
+      export or a missing button, and both are worth failing over.
+    */
+    {
+      const API = `${ROOT}/frontend/src/api.ts`
+      const ONLINE_CALLABLES = [
+        'groupParticipantsOnline', 'getOnlineGroups', 'moveSeat',
+        'topUpGroupWithBots', 'fillRemainderWithBots',
+      ]
+      // Deliberately unwired, with the reason. Empty today — keep it that way if you can.
+      const INTENTIONALLY_UNWIRED = []
+      for (const name of ONLINE_CALLABLES) {
+        const wrapped = execSync(`grep -c "export const ${name}" ${API} || true`).toString().trim() !== '0'
+        if (!wrapped) { check(false, `(M1b) api.ts wraps '${name}'`); continue }
+        /*
+          ⚠ A CALL SITE, NOT A MENTION. The first version grepped the bare word and
+          passed on `topUpGroupWithBots` because a COMMENT in the new component named it
+          — a green check whose only evidence was prose about the bug it was meant to
+          catch. Requiring `name(` means only an actual invocation counts.
+        */
+        const callers = execSync(
+          `grep -rl "${name}(" ${ROOT}/frontend/src --include=*.tsx || true`,
+        ).toString().trim().split('\n').filter(Boolean)
+        const ok = callers.length > 0 || INTENTIONALLY_UNWIRED.includes(name)
+        check(ok, `(M1b) '${name}' has a UI caller — not a callable with no button` +
+          (ok && callers.length ? ` (${callers.length} file(s))` : ''))
+      }
     }
 
     // (M2) THE HAPPY PATH: four unmatched students → two groups of two.

@@ -359,6 +359,16 @@ export const getOnlineGroups = () =>
 export const moveSeat = (participantId: string, targetGroupId: string) =>
   callFn<{ ok: boolean; moved: boolean; evicted_bot?: string | null }>('moveSeat', { participant_id: participantId, target_group_id: targetGroupId })
 
+/**
+ * Create a group for the ungrouped remainder and fill it with bots.
+ *
+ * ⚠ AT TWO SEATS AN ODD CLASS ALWAYS LEAVES EXACTLY ONE STUDENT, so this is the norm,
+ * not a recovery path — without it that student has no group and no game.
+ */
+export const fillRemainderWithBots = () =>
+  callFn<{ ok: boolean; created: boolean; group_id?: string; humans?: number; bots?: number; reason?: string }>(
+    'fillRemainderWithBots', {})
+
 /** Fill a group's empty seats with bot seat-fillers so a short group can play (online). */
 export const topUpGroupWithBots = (groupId: string) =>
   callFn<{ ok: boolean; added: number }>('topUpGroupWithBots', { group_id: groupId })
