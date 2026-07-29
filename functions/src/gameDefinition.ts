@@ -187,6 +187,7 @@ export const infoshareGameDef: GameDefinition = {
 
     // Rounds (§4): 10, fixed, shown, drawn per group.
     { key: CONFIG_KEYS.numRounds, kind: 'positiveInt', default: D.numRounds },
+    { key: CONFIG_KEYS.botPunishmentRounds, kind: 'positiveInt', default: D.botPunishmentRounds },
   ],
 
   /** Info-page links. Every `key` here must also appear in `configFields` above. */

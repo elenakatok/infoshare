@@ -4,6 +4,7 @@ import Play from './pages/Play'
 import InstructorDashboard from './pages/InstructorDashboard'
 import Configure from './pages/Configure'
 import Reports from './pages/Reports'
+import { configSections } from './configSections'
 import { SettingsPage } from '@mygames/game-ui'
 
 // The five routes every game in the fleet has. Keep the paths — the classroom app, the
@@ -28,36 +29,6 @@ const infoLinks = [
  * `kind` is limited to 'string' | 'positiveInt' | 'url'. There is NO decimal kind, so
  * probabilities and rates are strings, parsed server-side in round/settings.ts.
  */
-const configSections = [
-  {
-    id: 'rounds',
-    title: 'Rounds',
-    fields: [
-      { key: 'round_seconds', label: 'Seconds per decision (round clock)', kind: 'positiveInt' as const, placeholder: '120' },
-      { key: 'num_rounds',    label: 'Number of rounds',                   kind: 'positiveInt' as const, placeholder: '3' },
-      { key: 'clock_mode',    label: 'Clock: "on" (classroom) or "off" (online play)', kind: 'string' as const, placeholder: 'on' },
-    ],
-  },
-  {
-    id: 'payoffs',
-    title: 'Payoffs and draws',
-    fields: [
-      { key: 'pUp',          label: 'Probability the state is "up" (0–1)', kind: 'string' as const, placeholder: '0.5' },
-      { key: 'highCapacity', label: 'Capacity when the state is "up"',     kind: 'positiveInt' as const, placeholder: '3' },
-      { key: 'lowCapacity',  label: 'Capacity when the state is "down"',   kind: 'positiveInt' as const, placeholder: '1' },
-      { key: 'retailerRate',    label: 'Retailer earns per unit sold',           kind: 'positiveInt' as const, placeholder: '1' },
-      { key: 'supplierRate',     label: 'Supplier earns per unit sold',            kind: 'positiveInt' as const, placeholder: '2' },
-      { key: 'unitCost',     label: 'Supplier pays per unit committed',        kind: 'positiveInt' as const, placeholder: '1' },
-    ],
-  },
-  {
-    id: 'contact',
-    title: 'Instructor contact',
-    fields: [
-      { key: 'instructor_email', label: 'Instructor email (for the "cannot reach my group" flag)', kind: 'string' as const, placeholder: 'you@university.edu' },
-    ],
-  },
-]
 
 export default function App() {
   return (
