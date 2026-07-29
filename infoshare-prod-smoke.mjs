@@ -36,6 +36,7 @@ const MODE     = process.env.MODE === 'online' ? 'online' : 'classroom'
 const HEADED   = !!process.env.HEADED
 const WANTED   = process.env.INFOSHARE_INSTANCE || null
 const SEATS    = 2
+const ROUND_COLL = 'infoshare_round'
 
 let PASS = 0, FAIL = 0, SKIP = 0
 const banner = (m) => console.log('\n' + '─'.repeat(72) + '\n' + m + '\n' + '─'.repeat(72))
@@ -100,7 +101,9 @@ async function main() {
 
   banner('1–3. ROSTER, MODE, ATTENDANCE CODE')
   const sr = await fn('syncRoster', { token })
-  check(sr.ok && sr.synced > 0, `1. syncRoster — synced ${sr?.synced}`)
+  //  counts NEW participants, so a re-run against an already-synced instance
+  // legitimately reports 0. Assert the call succeeded, not that it created rows.
+  check(sr.ok, `1. syncRoster — ok (new participants: ${sr?.synced})`)
 
   if (MODE === 'online') {
     const cfg = await fn('updateGameConfig', { token, clock_mode: 'off' })
@@ -109,14 +112,14 @@ async function main() {
     check(true, '2. classroom mode (clock on, the default)')
   }
 
-  let code = null
-  if (MODE === 'classroom') {
-    const cr = await fn('generateAttendanceCode', { token })
-    code = cr.code
-    check(!!code, `3. generateAttendanceCode — ${code}`)
-  } else {
-    console.log('  (online mode uses no attendance code)')
-  }
+  // An attendance code is generated in BOTH modes. Online students never type one — but
+  // the launcher's drive-to-ready path calls verifyAttendanceCode server-side, and it
+  // refuses to run without a code. Confirming attendance is harmless online: grouping
+  // there comes from the roster via groupParticipantsOnline, not from attendance.
+  const cr = await fn('generateAttendanceCode', { token })
+  const code = cr.code
+  check(!!code, `3. generateAttendanceCode — ${code}` +
+    (MODE === 'online' ? ' (needed by the launcher; online students never type it)' : ''))
 
   banner('4. TWO STUDENTS LAUNCH AND REACH THE GAME')
   const pages = []
@@ -223,13 +226,6 @@ async function main() {
   }
   check(rounds === 3, `7. three rounds resolved through the UI (history rows: ${rounds})`)
 
-  // Who actually played — needed to judge the gradebook by COHORT rather than in bulk.
-  const playerIds = []
-  for (const p of pages) {
-    const st = await p.evaluate(() => window.__gameState?.participantId ?? null).catch(() => null)
-    if (st) playerIds.push(st)
-  }
-
   const vEnd = await seatView(pages[0]).catch(() => null)
   check(vEnd?.status === 'finished', '8. the student screen reports the game finished')
   const hist = await pages[0].locator('[data-testid="game-history"]').count()
@@ -242,7 +238,9 @@ async function main() {
 
   // ⚠ VERIFIED BY READING THE CLASSROOM, NOT BY THE UI TICK.
   try {
-    const cls = admin.initializeApp({ projectId: CLASSROOM_PROJECT }, `cls-${Date.now()}`).firestore()
+    const stamp = Date.now()
+    const cls = admin.initializeApp({ projectId: CLASSROOM_PROJECT }, `cls-${stamp}`).firestore()
+    const gameDb = admin.initializeApp({ projectId: PROJECT }, `game-${stamp}`).firestore()
     const gr = await cls.collection('game_results').where('game_instance_id', '==', IID).get()
     check(gr.size > 0, `11. ${gr.size} gradebook record(s) LANDED in the classroom's game_results`)
 
@@ -258,24 +256,50 @@ async function main() {
     // `raw_score` is null classroom-side for EVERY game in the fleet (verified against
     // crisis, pricing and eBay) — the classroom stores the normalized score and does not
     // keep raw. Do not treat null raw_score as a fault; it is the shape.
-    const players = playerIds
-    const asPlayer = gr.docs.filter((d) => players.includes(d.data().participant_id))
-    const asAbsent = gr.docs.filter((d) => !players.includes(d.data().participant_id))
-    check(asPlayer.length === players.length,
-      `11. both students who PLAYED have a record (${asPlayer.length}/${players.length})`)
-    check(asPlayer.length > 0 && asPlayer.every((d) => d.data().status === 'completed'),
-      '11. and both are status "completed" — NOT no_show')
-    check(asAbsent.every((d) => d.data().status === 'no_show'),
-      `11. the ${asAbsent.length} students who never played are status "no_show" (z −2)`)
-    // Participation-only scoring ⇒ a degenerate single-role pool ⇒ every present student
-    // normalizes to 0. A uniform 0 across players is CORRECT here, not a broken z-score.
-    check(asPlayer.every((d) => d.data().normalized_score === 0),
-      '11. players normalize to 0 (participation-only ⇒ zero-SD pool ⇒ uniform, by design)')
-    asPlayer.forEach((d) => {
-      const x = d.data()
-      console.log(`     PLAYED  ${x.participant_id}  status=${x.status}  z=${x.normalized_score}`)
-    })
-    console.log(`     ABSENT  ×${asAbsent.length}  status=no_show  z=-2`)
+    // ── THE PARTICIPATION RULE, ASSERTED BY COHORT (Elena, 2026-07-29) ────────
+    //   in a group at finalize → 'completed', scored, IN the pool
+    //   ungrouped at finalize  → 'no_show', z −2, OUT of the pool
+    // "Never started" is NOT a cohort the code judges: a grouped student counts as a
+    // participant whether or not their group ever played. That is the instructor's call,
+    // made by ungrouping, and the dashboard warns before finalize rather than inferring.
+    const ps = await gameDb.collection('game_instances').doc(IID).collection('participants').get()
+    const groupOf = new Map(ps.docs.map((d) => [d.id, d.data().group_id ?? null]))
+    const rounds = await gameDb.collection('game_instances').doc(IID).collection(ROUND_COLL).get()
+    const startedGroups = new Set(rounds.docs.map((d) => d.id))
+
+    const cohort = { played: [], neverStarted: [], ungrouped: [] }
+    for (const d of gr.docs) {
+      const pid = d.data().participant_id
+      const gid = groupOf.get(pid) ?? null
+      if (!gid) cohort.ungrouped.push(d)
+      else if (startedGroups.has(gid)) cohort.played.push(d)
+      else cohort.neverStarted.push(d)
+    }
+    const allAre = (arr, st) => arr.every((d) => d.data().status === st)
+
+    check(cohort.played.length >= SEATS,
+      `11. students in groups that PLAYED: ${cohort.played.length}`)
+    check(allAre(cohort.played, 'completed'), '11. …all status "completed"')
+    check(cohort.played.every((d) => d.data().normalized_score === 0),
+      '11. …and normalize to 0 (participation-only ⇒ zero-SD pool ⇒ uniform, by design)')
+
+    check(allAre(cohort.neverStarted, 'completed'),
+      `11. students in groups that NEVER STARTED: ${cohort.neverStarted.length} — all "completed"` +
+      ' (the rule: in a group = participated; the dashboard warns before finalize)')
+
+    check(allAre(cohort.ungrouped, 'no_show'),
+      `11. UNGROUPED students: ${cohort.ungrouped.length} — all "no_show"`)
+    check(cohort.ungrouped.every((d) => d.data().normalized_score === -2 && d.data().raw_score === null),
+      '11. …scored −2 with null raw, and excluded from the mean/SD pool')
+
+    // Printed from the DATA, never from a literal. An earlier version of this summary
+    // hardcoded "status=no_show z=-2" and would have printed it whatever the truth was.
+    for (const [label, arr] of Object.entries(cohort)) {
+      if (!arr.length) { console.log(`     ${label.padEnd(13)} ×0`); continue }
+      const sts = [...new Set(arr.map((d) => d.data().status))].join(',')
+      const zs = [...new Set(arr.map((d) => d.data().normalized_score))].join(',')
+      console.log(`     ${label.padEnd(13)} ×${String(arr.length).padEnd(3)} status=${sts}  z=${zs}`)
+    }
   } catch (e) {
     skip('11. gradebook read', `classroom Firestore unreadable: ${String(e.message).slice(0, 100)}`)
   }
