@@ -245,6 +245,24 @@ export default function Reports() {
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <GameHeader />
       <div style={{ padding: '1rem 1.5rem 0.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/*
+          ⚠ THE WAY BACK. This page had none: an instructor who opened Reports had no
+          route to the dashboard but the browser's Back button. Crisis, eBay and SAA all
+          carry this button; infoshare was the only one without it.
+
+          ⚠ THE QUERY STRING IS CARRIED OVER WHOLE. The instructor's identity lives in
+          the URL — `token` + `game_instance_id` in production, `_dev_game_instance_id`
+          locally — so a bare href to /dashboard lands on a page with no session and the
+          instructor is bounced. Copying `window.location.search` preserves whichever
+          scheme opened this page without this file having to know about either, which is
+          also why it cannot drift when the param names change.
+        */}
+        <button
+          data-testid="reports-back-to-dashboard"
+          onClick={() => { window.location.href = `/dashboard${window.location.search}` }}
+          style={{ background: 'none', border: '1px solid #ccc', borderRadius: 4,
+                   padding: '0.3rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem' }}
+        >← Dashboard</button>
         <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Reports — Information Sharing</h2>
       </div>
 
