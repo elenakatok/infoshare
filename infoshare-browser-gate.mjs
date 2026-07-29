@@ -105,12 +105,23 @@ async function main() {
 
   // ── watch it play out ──────────────────────────────────────────────────────
   banner('PLAY — ten rounds, unattended')
-  const deadline = Date.now() + 12 * 60 * 1000
+  /*
+    ⚠ 25 MINUTES, NOT 12. Ten rounds × two stages on a 120s classroom clock is up to ~40
+    minutes if the robots ever fall back on the timer rather than dismissing the results
+    screen themselves. A 12-minute cap made a slow-but-working run indistinguishable from
+    a stall, which is a harness limit reported as a product failure.
+  */
+  const deadline = Date.now() + 25 * 60 * 1000
   let finished = false
+  let lastLine = null
   while (Date.now() < deadline) {
     await dash.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
     await sleep(6000)
     const text = await dash.locator('body').innerText().catch(() => '')
+    // ⚠ ECHO THE STRIP. This is also where the two redeploy claims get confirmed:
+    // "Round N of 10" (not "of 3") and a real stage name (not "signal").
+    const line = (text.match(/Round \d+ of \d+[^\n]*/) ?? [])[0]
+    if (line && line !== lastLine) { console.log(`    strip: ${line}`); lastLine = line }
     if (/finished/i.test(text)) { finished = true; break }
     if (driverExited !== null && driverExited !== 0) break
   }
