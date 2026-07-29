@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { InstructorDashboard as SharedDashboard, type DeadlockResolutionProps, type OutcomeFields } from '@mygames/game-ui'
 import { auth, functions, rtdb } from '../firebase'
 import { submitInstructorOutcome } from '../api'
+import GameControlStrip from './GameControlStrip'
 import { infoshareRoleConfig } from '../gameConfig'
 
 // ── Role labels from game config (SINGLE matching role — `player`) ─────────────
@@ -69,11 +70,13 @@ export default function InstructorDashboard() {
   return (
     <>
       {/*
-        ⚠ PLACEHOLDER_GAME (spawn Part 1). A real game portals a live control strip above
-        the shared dashboard (group status, the Start-class button, the online grouping
-        panel). The template ships without one so the placeholder game runs on the
-        shared dashboard alone and there is nothing game-specific to delete first.
+        ⚠ THE START CONTROL LIVES HERE, NOT IN THE SHARED DASHBOARD.
+        The shared dashboard matches groups and then stops — it knows nothing about a
+        round loop and cannot, because "starting" differs per family. Without this strip
+        the game matches and dead-ends: students sit on "This group has not started yet"
+        and the instructor has no control anywhere on the page. That shipped once.
       */}
+      <GameControlStrip />
       <SharedDashboard
         title="Instructor Dashboard — Information Sharing"
         roleLabels={roleLabels}
