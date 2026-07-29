@@ -55,12 +55,8 @@ export function TrustworthinessChart({ data, scope }: { data: { trueHigh: Series
             the reader trusts the words. Say HIGH and LOW, which the legend already
             colours, and the sentence survives the next palette change too.
           */}
-          A Retailer never loses by reporting HIGH when demand really is HIGH, so the
-          <strong> HIGH</strong> dots sit near the top almost by construction.
-          <strong> The LOW dots are the game</strong> — telling the truth about LOW is
-          what costs something. Each dot is one round; clock-resolved rounds are excluded,
-          so the number of groups behind a dot varies and the dots are deliberately not
-          joined.
+          A Retailer never loses by reporting HIGH when demand is HIGH, so those dots
+          sit near the top by construction. <strong>The LOW dots are the game.</strong>
         </>
       }
     />
@@ -89,10 +85,14 @@ export function TrustChart({ data, scope }: { data: { afterHigh: Series; afterLo
       countSeriesKey="afterHigh"
       caption={
         <>
-          The gap between the lines <strong>is</strong> belief. A Supplier who has stopped
-          listening orders the same amount whatever the message, and the two sets of dots
-          converge. Each dot is one round; clock-resolved rounds are excluded, so the number
-          of groups behind a dot varies and the dots are deliberately not joined.
+          {/*
+            It said "the gap between the LINES" and then "the two sets of DOTS" — the
+            series were changed to markers and half the sentence was not. A caption that
+            describes a chart that is not on the screen is worse than none.
+          */}
+          The gap <strong>is</strong> belief — a Supplier who has stopped listening orders
+          the same whatever the message. Clock-resolved rounds are excluded, so the dots
+          are not joined.
         </>
       }
     />

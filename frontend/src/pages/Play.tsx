@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { SEATS_PER_GROUP_WORD } from '../groupSize'
 import { doc, getDoc } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { auth, db, rtdb, functions } from '../firebase'
@@ -292,8 +293,8 @@ export default function Play() {
         <main style={{ padding: layout.pagePad, maxWidth: layout.contentWidth, margin: '0 auto' }}>
           <h1 style={{ marginTop: 0 }}>Not in a group yet</h1>
           <p data-testid="online-holding" style={{ lineHeight: 1.6, color: colors.textSecondary }}>
-            You are not currently assigned to a group. Check back soon — this page will show your
-            group as soon as your instructor forms or updates the groups.
+            You are not in a group yet. This page will update when your instructor
+            forms them.
           </p>
         </main>
       )}
@@ -332,7 +333,7 @@ export default function Play() {
           <h1 style={{ marginTop: 0 }}>Preparation complete</h1>
           <p style={{ lineHeight: 1.6, marginBottom: spacing.gapSm }}>
             When class begins and your instructor starts the session, you&apos;ll be placed
-            in a group of three players.
+            in a group of {SEATS_PER_GROUP_WORD} players.
           </p>
           <p style={{ color: colors.textSecondary, marginBottom: layout.pagePad }}>
             You can close this tab and come back later — your work has been saved.
@@ -347,7 +348,7 @@ export default function Play() {
         <main style={{ padding: layout.pagePad, maxWidth: layout.contentWidth, margin: '0 auto' }}>
           <h1 style={{ marginTop: 0 }}>Ready to play?</h1>
           <p style={{ lineHeight: 1.6, marginBottom: spacing.gapSm }}>
-            You&apos;ll be placed in a group of three. Only continue if you are in class and
+            You&apos;ll be placed in a group of {SEATS_PER_GROUP_WORD}. Only continue if you are in class and
             ready to take part right now.
           </p>
           {confError && (

@@ -98,10 +98,9 @@ export default function HistoryTable({ history, viewerRole }: { history: RoundRe
       />
       {history.length > 0 && (
         <p style={{ color: colors.textSecondary, fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
-          The Actual Forecast and Customer Demand columns are what really happened. Both
-          become visible to both players once a round is over — which is why a report that
-          did not match is always found out, one round later.
-          {viewerRole ? ' Your own profit column is in bold.' : ''}
+          Actual Forecast and Customer Demand are what really happened — both players
+          see them once the round is over.
+          {viewerRole ? ' Your profit column is in bold.' : ''}
         </p>
       )}
     </div>

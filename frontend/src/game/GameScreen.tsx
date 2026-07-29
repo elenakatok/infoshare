@@ -162,13 +162,18 @@ export default function GameScreen({
           onAdvance={() => { setYouContinued(false); setShowingResultFor(null) }}
           history={<HistoryTable history={v.history} viewerRole={v.role} />}
         >
+          {/*
+            One scannable line, not two sentences of narration. A student reads this
+            screen once, between decisions, and every clause they have to parse is a
+            clause they skip.
+          */}
           <p data-testid="result-line">
-            The Retailer reported <strong>{row.message}</strong>; the true type was{' '}
-            <strong>{row.demandType}</strong> and demand was <strong>{row.actualDemand}</strong>.{' '}
-            The Supplier produced <strong>{row.production}</strong>; <strong>{row.sales}</strong> sold.
+            Reported <strong>{row.message}</strong> · true type <strong>{row.demandType}</strong>{' '}
+            · demand <strong>{row.actualDemand}</strong> · produced <strong>{row.production}</strong>{' '}
+            · sold <strong>{row.sales}</strong>
           </p>
           <p data-testid="result-profits">
-            The Retailer earned <strong>{row.profits.retailer}</strong>; the Supplier earned{' '}
+            Retailer earned <strong>{row.profits.retailer}</strong>; Supplier earned{' '}
             <strong>{row.profits.supplier}</strong>.
           </p>
         </RoundResultsScreen>
@@ -312,10 +317,10 @@ export default function GameScreen({
           <Choices
             label="Choose your production, in lots."
             help={
-              <>
-                Every lot costs you to make whether or not it sells. You keep the revenue
-                on lots that sell. Open <em>Show the numbers</em> for the full table.
-              </>
+              // No pointer to the numbers panel — it is open by default in round 1, and
+              // after that it is wherever the student left it. Telling them to open a
+              // panel already on screen is noise.
+              <>Every lot costs you to make, sold or not.</>
             }
             testId="production-choices"
             options={[1, 2, 3].map((n) => ({ value: String(n), label: `Produce ${n}` }))}

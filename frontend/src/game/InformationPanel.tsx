@@ -91,9 +91,8 @@ export function InformationPanelBody({ settings = DEFAULT_ROUND_SETTINGS }: { se
     <div data-testid="information-panel">
       <h4 style={{ margin: `0 0 ${spacing.gapSm}`, fontSize: '0.95rem' }}>Customer demand</h4>
       <p style={{ margin: `0 0 ${spacing.gapSm}`, fontSize: typography.sizeSm, color: colors.textSecondary }}>
-        Chance that customers want this many lots. Both demand types are shown — the
-        distributions are common knowledge; what is private is which type was drawn
-        this round.
+        Chance that customers want this many lots. Both types are shown; only this
+        round&apos;s draw is private.
       </p>
       <div style={{ display: 'flex', gap: spacing.gapLg, flexWrap: 'wrap' }}>
         <Histogram type="HIGH" s={settings} />
@@ -102,16 +101,20 @@ export function InformationPanelBody({ settings = DEFAULT_ROUND_SETTINGS }: { se
 
       <h4 style={{ margin: `${spacing.gapLg} 0 ${spacing.gapSm}`, fontSize: '0.95rem' }}>Profits</h4>
       <p style={{ margin: `0 0 ${spacing.gapSm}`, fontSize: typography.sizeSm, color: colors.textSecondary }}>
-        Customers pay {settings.retailPrice} per lot sold. The Retailer pays the Supplier{' '}
-        {settings.wholesalePrice} per lot. Each lot costs the Supplier {settings.unitCost} to
-        make, whether or not it sells. Every cell reads{' '}
-        <strong>Retailer profit / Supplier profit</strong>.
+        Customers pay {settings.retailPrice} per lot sold; the Retailer pays the Supplier{' '}
+        {settings.wholesalePrice}. Each lot costs the Supplier {settings.unitCost} to make,
+        sold or not.
       </p>
       <div style={{ overflowX: 'auto', border: '1px solid #ddd', borderRadius: 6, maxWidth: 460 }}>
         <table data-testid="payoff-table" style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
             <tr>
-              <th style={th}>Customer demand</th>
+              <th style={th}>
+                Customer demand
+                <div style={{ fontWeight: 400, fontSize: '0.68rem', color: colors.textSecondary }}>
+                  each cell: Retailer / Supplier
+                </div>
+              </th>
               {LOTS.map((q) => <th key={q} style={th}>Produce {q}</th>)}
             </tr>
           </thead>
