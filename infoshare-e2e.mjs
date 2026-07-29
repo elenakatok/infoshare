@@ -256,6 +256,7 @@ function assertNoLeak(view, role, where) {
 }
 
 let leakChecks = 0
+let strategyChecksRun = 0
 let revealsAfter = 0
 
 /**
@@ -622,21 +623,33 @@ async function main() {
       and false of the group, which is the sort of failure that reads as a bot bug and
       is not one.
     */
-    const botPid = membersOf(short).find((pid) => String(pid).startsWith('bot_'))
-    // The instructor round view is what carries seat → role and seat → pid. The round
-    // report rows do not, and asking them for it silently produced "unknown".
-    const irv = await callFn('getInstructorRoundView', asDev(gid, { group_id: short.group_id }))
-    const pidBySeat = irv.result?.pidBySeat ?? {}
-    const roleBySeat = irv.result?.roleBySeat ?? {}
-    const botSeat = Object.keys(pidBySeat).find((k) => pidBySeat[k] === botPid)
-    const botRole = botSeat === undefined ? null : roleBySeat[botSeat]
+    /*
+      ⚠ THE BOT'S ROLE COMES FROM THE HUMAN'S OWN VIEW, and this is not a workaround.
+      A group is two seats with two distinct roles, so whichever role the human does not
+      hold is the bot's — derived from a shape that is already load-bearing rather than
+      one invented for the test.
+
+      Two earlier attempts read fields that do not exist: `retailer_participant_id` off
+      the report rows, then `pidBySeat`/`roleBySeat` off getInstructorRoundView (which
+      returns `{ ok, state, history }` and no seat→pid map at all). Both produced
+      "unknown" and silently skipped every strategy assertion below — a check that never
+      runs, which is the exact shape of the false greens this build keeps producing.
+    */
+    const humanView = await callFn('getRoundView', asStudent(gid, humanPid, { group_id: short.group_id }))
+    const humanRole = humanView.ok ? humanView.result.view.role : null
+    const botRole = humanRole === 'retailer' ? 'supplier' : humanRole === 'supplier' ? 'retailer' : null
     check(botRole === 'retailer' || botRole === 'supplier',
-      `6. the bot holds a real seat and its role is known (${botRole ?? 'unknown'})`)
+      `6. the bot's role is known — human is ${humanRole ?? '?'}, so the bot is ${botRole ?? 'unknown'}`)
+    // ⚠ AND THE BRANCH BELOW MUST ACTUALLY EXECUTE. Counting assertions is not the same
+    // as running them: if botRole were null the whole strategy block would be skipped and
+    // the suite would still report a rising pass count.
+    strategyChecksRun = 0
 
     if (botRole === 'retailer') {
       const highRows = rows.filter((r) => r.demandType === 'HIGH')
       check(highRows.length > 0 && highRows.every((r) => r.message === 'HIGH'),
         `6. RETAILER bot reported HIGH on every HIGH round (${highRows.length} such rounds)`)
+      strategyChecksRun++
     } else if (botRole === 'supplier') {
       const lowReports = rows.filter((r) => r.message === 'LOW')
       check(lowReports.length > 0 && lowReports.every((r) => r.production === 1),
@@ -645,7 +658,10 @@ async function main() {
         !rows.some((p) => p.round < r.round && p.message === 'HIGH' && p.demandType === 'LOW'))
       check(cleanHigh.every((r) => r.production === 3),
         `6. SUPPLIER bot produced 3 after HIGH while never yet lied to (${cleanHigh.length} rounds)`)
+      strategyChecksRun += 2
     }
+    check(strategyChecksRun > 0,
+      `6. the strategy assertions ACTUALLY RAN (${strategyChecksRun}) — not skipped by an unknown role`)
 
     // 7. ⚠ THE PUSH LANDS, AND THE BOT IS NOT IN IT.
     pushed = []
@@ -679,20 +695,43 @@ async function main() {
     }
     // One online student is an odd class of one: the chained matcher pairs them with a
     // robot, exactly as it does in a classroom.
-    // ⚠ ONLINE GROUPS ARE FORMED BY groupParticipantsOnline, NOT triggerMatching. The
-    // classroom matcher keys on attendance-code confirmation, which online students never
-    // do — pointing this block at it produced zero groups and looked like a bot failure.
+    /*
+      ⚠ THE REAL INSTRUCTOR WORKFLOW: PRE-GROUP EVERYONE, THEN UNGROUP THE NO-SHOWS.
+
+      Online grouping pairs every rostered student regardless of pre-game state, so a
+      roster of four produces two full human groups and there is no seat for a bot at
+      all. Two earlier attempts tried to make a student INELIGIBLE beforehand; grouping
+      ignores eligibility, so both failed and it read as a bot fault.
+
+      Ungrouping after the fact is not a trick to make the fixture work — it is what an
+      instructor actually does when someone does not turn up, and it leaves exactly the
+      state a bot exists to repair: a group one seat short, mid-setup.
+    */
     await callFn('groupParticipantsOnline', asDev(gid, {}))
-    const og = await callFn('getOnlineGroups', asDev(gid, {}))
-    const allG = og.result?.groups ?? []
-    // The SHORT group is the odd student's — that is the one a bot belongs in.
-    const g0 = allG.find((g) => (g.occupants ?? []).length < 2) ?? allG[0]
-    check(!!g0, `1. an online group was formed (${allG.length}; sizes ${allG.map((g) => (g.occupants ?? []).length).join(', ')})`)
-    if (!g0) throw new Error('no online group formed')
+    const ogAll = await callFn('getOnlineGroups', asDev(gid, {}))
+    const groupsAll = ogAll.result?.groups ?? []
+    check(groupsAll.length >= 1, `1. online pre-grouping formed ${groupsAll.length} group(s)`)
+
+    const victimGroup = groupsAll[0]
+    const noShow = (victimGroup?.occupants ?? [])[1]?.participant_id
+    check(!!noShow, `1. a group with two occupants to ungroup from (${(victimGroup?.occupants ?? []).length})`)
+    if (!noShow) throw new Error('no two-occupant online group to ungroup from')
+
+    // Empty target_group_id → ungroup. This is the "no-show" case.
+    const mv = await callFn('moveSeat', asDev(gid, { participant_id: noShow, target_group_id: '' }))
+    check(mv.ok, `2. ungrouped the no-show ${noShow} — ${mv.ok ? 'ok' : mv.error}`)
+
+    const ogShort = await callFn('getOnlineGroups', asDev(gid, {}))
+    const g0 = (ogShort.result?.groups ?? []).find((g) => g.group_id === victimGroup.group_id)
+    check((g0?.occupants ?? []).length === 1,
+      `2. that group is now SHORT — one human waiting (${(g0?.occupants ?? []).length})`)
+    if (!g0) throw new Error('the ungrouped-from group vanished')
+
     const top = await callFn('topUpGroupWithBots', asDev(gid, { group_id: g0.group_id }))
-    check(top.ok, `2. topUpGroupWithBots (online) — ${top.ok ? `added ${top.result.added}` : top.error}`)
-    const og2 = await callFn('getOnlineGroups', asDev(gid, {}))
-    const occ = (og2.result?.groups ?? []).find((g) => g.group_id === g0.group_id)?.occupants ?? []
+    check(top.ok && top.result.added === 1,
+      `2. topUpGroupWithBots filled the empty seat (added ${top.ok ? top.result.added : '?'})`)
+    const ogFull = await callFn('getOnlineGroups', asDev(gid, {}))
+    const occ = (ogFull.result?.groups ?? []).find((g) => g.group_id === g0.group_id)?.occupants ?? []
     check(occ.some((o) => String(o.participant_id).startsWith('bot_')),
       `2. and the online group now contains a robot (${occ.map((o) => o.participant_id).join(', ')})`)
 
