@@ -8,8 +8,19 @@ import type { Series, PairPoint } from './analytics'
 // Pricing uses — so infoshare's charts are not a different generation of picture.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const RETAILER = '#D38626'   // the house orange
-const SUPPLIER = '#2563eb'
+// ⚠ ONE COLOUR PER CONCEPT, ACROSS EVERY CHART ON THE PAGE.
+// HIGH is always this orange and LOW is always this teal — in the trustworthiness
+// series, in the trust series, in the scatter and in every legend. When the same idea
+// changes colour between two charts a reader has to re-learn the key each time, and on a
+// projector they will not.
+export const HIGH_COLOUR = '#D38626'   // the house orange
+export const LOW_COLOUR  = '#0f766e'   // teal — distinct from orange in mono and to most
+                                       // colour-blind viewers
+/** Anything that is neither HIGH nor LOW (the scatter's pair dots). */
+export const NEUTRAL_COLOUR = '#475569'
+
+/** Big enough to read projected — these charts are used in a lecture theatre. */
+const DOT = 6
 
 const toPoints = (s: Series) => s.map((p) => ({ round: p.round, value: p.value, n: p.n }))
 
@@ -24,9 +35,12 @@ export function TrustworthinessChart({ data, scope }: { data: { trueHigh: Series
   return (
     <RoundSeriesChart
       series={[
-        { key: 'trueLow', label: 'Demand was LOW', color: RETAILER, points: toPoints(data.trueLow) },
-        { key: 'trueHigh', label: 'Demand was HIGH', color: '#94a3b8', points: toPoints(data.trueHigh) },
+        { key: 'trueLow', label: 'Demand was LOW', color: LOW_COLOUR, points: toPoints(data.trueLow) },
+        { key: 'trueHigh', label: 'Demand was HIGH', color: HIGH_COLOUR, points: toPoints(data.trueHigh) },
       ]}
+      markersOnly
+      dotRadius={DOT}
+      yAxisLabel="Proportion of reports that were truthful"
       yDomain={[0, 1]}
       formatValue={(v) => `${Math.round(v * 100)}%`}
       ariaLabel={`Proportion of reports matching the true demand type, by round — ${scope}`}
@@ -34,10 +48,12 @@ export function TrustworthinessChart({ data, scope }: { data: { trueHigh: Series
       countSeriesKey="trueLow"
       caption={
         <>
-          A Retailer never loses by reporting HIGH when demand really is HIGH, so the grey
-          line is near the top almost by construction. <strong>The orange line is the
-          game</strong> — telling the truth about LOW is what costs something.
-          Rounds resolved by the clock are excluded.
+          A Retailer never loses by reporting HIGH when demand really is HIGH, so the
+          <strong> orange</strong> dots sit near the top almost by construction.
+          <strong> The teal dots are the game</strong> — telling the truth about LOW is
+          what costs something. Each dot is one round; clock-resolved rounds are excluded,
+          so the number of groups behind a dot varies and the dots are deliberately not
+          joined.
         </>
       }
     />
@@ -53,9 +69,12 @@ export function TrustChart({ data, scope }: { data: { afterHigh: Series; afterLo
   return (
     <RoundSeriesChart
       series={[
-        { key: 'afterHigh', label: 'After a HIGH report', color: SUPPLIER, points: toPoints(data.afterHigh) },
-        { key: 'afterLow', label: 'After a LOW report', color: '#7c3aed', points: toPoints(data.afterLow) },
+        { key: 'afterHigh', label: 'After a HIGH report', color: HIGH_COLOUR, points: toPoints(data.afterHigh) },
+        { key: 'afterLow', label: 'After a LOW report', color: LOW_COLOUR, points: toPoints(data.afterLow) },
       ]}
+      markersOnly
+      dotRadius={DOT}
+      yAxisLabel="Average lots produced"
       yDomain={[1, 3]}
       formatValue={(v) => v.toFixed(2)}
       ariaLabel={`Average production by report received, by round — ${scope}`}
@@ -64,8 +83,9 @@ export function TrustChart({ data, scope }: { data: { afterHigh: Series; afterLo
       caption={
         <>
           The gap between the lines <strong>is</strong> belief. A Supplier who has stopped
-          listening orders the same amount whatever the message, and the two lines close.
-          Rounds resolved by the clock are excluded.
+          listening orders the same amount whatever the message, and the two sets of dots
+          converge. Each dot is one round; clock-resolved rounds are excluded, so the number
+          of groups behind a dot varies and the dots are deliberately not joined.
         </>
       }
     />
@@ -108,17 +128,17 @@ export function ReciprocityScatter({ points }: { points: PairPoint[] }) {
         <line x1={PAD} y1={16} x2={PAD} y2={H - PAD} stroke="#999" />
         {plotted.map((p) => (
           <g key={p.groupId}>
-            <circle cx={x(p.truthAboutLow!)} cy={y(p.productionAfterLow!)} r={7} fill={RETAILER} fillOpacity={0.75} />
+            <circle cx={x(p.truthAboutLow!)} cy={y(p.productionAfterLow!)} r={9} fill={NEUTRAL_COLOUR} fillOpacity={0.8} />
             <text x={x(p.truthAboutLow!)} y={y(p.productionAfterLow!) + 3} fontSize="8"
               fill="#fff" textAnchor="middle" fontWeight="700">{p.groupNumber}</text>
           </g>
         ))}
         <text x={(W + PAD) / 2} y={H - 8} fontSize="11" fill="#444" textAnchor="middle">
-          Retailer: truth told about LOW
+          Retailer: proportion of LOW rounds reported truthfully
         </text>
         <text x={14} y={(H - PAD) / 2} fontSize="11" fill="#444" textAnchor="middle"
           transform={`rotate(-90 14 ${(H - PAD) / 2})`}>
-          Supplier: average order after LOW
+          Supplier: average lots produced after a LOW report
         </text>
       </svg>
       <p style={{ fontSize: '0.78rem', color: colors.textSecondary, margin: '0.4rem 0 0' }}>

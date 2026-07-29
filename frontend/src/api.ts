@@ -8,7 +8,27 @@ import type { OutcomeSchema } from './gameConfig'
 // auth.currentUser exists, and sends nothing when there is no session —
 // covering both bootstrap (getInstructorSession, assignRole) and authed calls.
 
+/**
+ * DEV ONLY: the `_dev_game_instance_id` the dashboard bootstraps with, threaded into
+ * every instructor call.
+ *
+ * The shared dashboard establishes a Firebase session from that query param, but the
+ * per-game instructor callables resolve their instance from the CALL, not the session,
+ * so without this they answer "Missing token" against a perfectly good session. In
+ * production the param does not exist and nothing is added — the classroom JWT or the
+ * Bearer session carries the identity, exactly as before.
+ *
+ * This is why the control strip showed "0 groups" in a dev screenshot while working in
+ * production: a harness gap, and this closes it.
+ */
+function devArgs(): object {
+  if (!import.meta.env.DEV) return {}
+  const iid = new URLSearchParams(window.location.search).get('_dev_game_instance_id')
+  return iid ? { _dev: { game_instance_id: iid } } : {}
+}
+
 async function callFn<T>(name: string, data: object = {}): Promise<T> {
+  data = { ...devArgs(), ...data }
   const fn = httpsCallable<object, T>(functions, name)
   const result = await fn(data)
   return result.data
