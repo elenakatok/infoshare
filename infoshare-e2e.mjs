@@ -258,6 +258,50 @@ function assertNoLeak(view, role, where) {
 let leakChecks = 0
 let strategyChecksRun = 0
 let revealsAfter = 0
+let historyRowsChecked = 0
+const historyRowFaults = []
+const seatRows = {}
+
+/**
+ * A completed history row must carry every field the table renders — not just the ones
+ * whose names happen to be stable across a rewrite.
+ *
+ * ⚠ PRESENCE **AND** TYPE. `message: undefined` and `message: null` both render as a
+ * blank cell, and so does a row that never had the key. All three are the failure Elena
+ * saw, so `in` alone is not enough here — the value has to be usable.
+ */
+function assertHistoryRowComplete(row, role, where) {
+  /*
+    ⚠ NEGATIVE CONTROL — `BLANK_HISTORY=1` reproduces Elena's bug exactly: strip the four
+    renamed fields and leave `profits` (the only names that survived the slice-1 rewrite),
+    which is precisely the row a placeholder-era payload produces. The assertion MUST then
+    fail. If a run with BLANK_HISTORY=1 is green, this whole block is decoration and every
+    absence check above is passing on nothing.
+
+    Four false greens in this build shared one property: the assertion was equally true of
+    the broken state. This is the cheapest way to prove that this one is not.
+  */
+  if (process.env.BLANK_HISTORY === '1') {
+    row = { round: row.round, sales: row.sales, profits: row.profits,
+            truthful: row.truthful, defaulted: row.defaulted }
+  }
+  const want = {
+    demandType: (v) => v === 'HIGH' || v === 'LOW',
+    message: (v) => v === 'HIGH' || v === 'LOW',
+    production: (v) => [1, 2, 3].includes(v),
+    actualDemand: (v) => [1, 2, 3].includes(v),
+    sales: (v) => typeof v === 'number' && Number.isFinite(v),
+    round: (v) => typeof v === 'number' && v > 0,
+  }
+  for (const [k, ok] of Object.entries(want)) {
+    if (!(k in row)) { historyRowFaults.push(`${where} ${role} r${row.round}: ${k} ABSENT`); continue }
+    if (!ok(row[k])) historyRowFaults.push(`${where} ${role} r${row.round}: ${k}=${JSON.stringify(row[k])}`)
+  }
+  if (!row.profits || typeof row.profits.retailer !== 'number' || typeof row.profits.supplier !== 'number') {
+    historyRowFaults.push(`${where} ${role} r${row.round}: profits malformed`)
+  }
+  historyRowsChecked++
+}
 
 /**
  * Play one round for a group, whoever holds which seat.
@@ -281,6 +325,26 @@ async function playRound(gid, groupId, pids, round) {
       if (role === 'supplier') {
         revealsAfter += v.result.view.history.filter(
           (h) => h.demandType === 'HIGH' || h.demandType === 'LOW').length
+      }
+      // ⚠ BOTH ROLES. History has no secrets once a round is over, so a row that is
+      // complete for the retailer and gutted for the supplier is itself the bug.
+      for (const h of v.result.view.history) {
+        assertHistoryRowComplete(h, role, `round ${round} pass ${pass}`)
+        // ⚠ KEYED BY GROUP, NOT JUST ROUND. Every group draws its own demand type, so a
+        // round-only key compares group A's round 3 with group B's and reports a
+        // disagreement that is simply two different games. Caught on the first run.
+        const key = `${groupId}:${h.round}`
+        const other = seatRows[key]
+        if (other && other.role !== role) {
+          // The two fields both seats must be able to reconcile after the fact.
+          if (other.demandType !== h.demandType || other.message !== h.message) {
+            historyRowFaults.push(
+              `r${h.round}: seats disagree — ${other.role} saw ${other.message}/${other.demandType}, ` +
+              `${role} saw ${h.message}/${h.demandType}`)
+          }
+        } else {
+          seatRows[key] = { role, message: h.message, demandType: h.demandType }
+        }
       }
 
       if (owes === 'message') {
@@ -769,11 +833,36 @@ async function main() {
   // assertions and requiring a floor is what makes the block above evidence rather than
   // decoration.
   check(leakChecks >= 40, `WIRE: the leak assertions actually ran (${leakChecks} made across both paths)`)
-  // ⚠ AND THE COMPLEMENT. Hiding is trivially achievable by never revealing anything, and
-  // every assertion above would still pass on a game where the Supplier NEVER learns the
-  // truth — which would delete the entire mechanism. `revealsAfter` proves the other half.
+
+  /*
+    ═══════════════════════════════════════════════════════════════════════════════
+    THE HISTORY ROW MUST BE COMPLETE — AND THIS IS WHY THE LEAK ASSERTIONS NEED IT.
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    ⚠ EVERY ABSENCE CHECK ABOVE PASSES TRIVIALLY IF THE FIELD IS NEVER WRITTEN AT ALL.
+    "demand_type is absent from the supplier's view" is equally true of a working reveal
+    and of a build that simply dropped the field on the floor. Elena found exactly that on
+    a real Game-over screen: four columns blank — Actual Forecast, Reported Forecast,
+    Production, Customer Demand — while the profits rendered fine. Profits are the ONLY
+    fields whose names survived the slice-1 rewrite, so a row carrying just those is the
+    signature of a payload built by the placeholder-era code.
+
+    `revealsAfter` was supposed to be the complement, and it was not enough: it only
+    counted rows where demandType happened to be set, so zero rows would have meant zero
+    counted and the check merely required "> 0" somewhere in the run.
+
+    So this asserts, on EVERY completed row of EVERY seat: all six substantive fields
+    PRESENT, of the right TYPE, and — for the two that both seats must be able to
+    reconcile — carrying the SAME value for the retailer and the supplier. A blank column
+    can no longer hide behind a green absence check.
+  */
   check(revealsAfter > 0,
     `WIRE: and the truth DOES reach the supplier once a round is over (${revealsAfter} rounds seen)`)
+  check(historyRowsChecked > 0,
+    `WIRE: history rows were actually inspected (${historyRowsChecked}) — not zero rows passing vacuously`)
+  check(historyRowFaults.length === 0,
+    `WIRE: every history row is COMPLETE for both seats` +
+    (historyRowFaults.length ? ` — ${historyRowFaults.slice(0, 4).join('; ')}` : ''))
 
   banner(`RESULT — ${PASS} passed, ${FAIL} failed`)
   return FAIL === 0
