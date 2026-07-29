@@ -1,4 +1,4 @@
-import { HistoryTable as SharedHistoryTable, col, num, colors } from '@mygames/game-ui'
+import { HistoryTable as SharedHistoryTable, col, group, sub, num, colors } from '@mygames/game-ui'
 import type { RoundRecord, Role } from '../api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -47,24 +47,48 @@ const money = (n: number) => num(n)
  *   Customer Demand    round field  actual_demand
  *   both Profits       result value from the resolver
  */
-const mineIf = (mine: boolean, text: string) =>
-  mine ? <strong>{text}</strong> : <span>{text}</span>
-
+/**
+ * GROUPED MODE — TWO HEADER ROWS, exactly as crisis renders it.
+ *
+ * ⚠ THE FLAT SEVEN WERE WHAT SET THE WIDTH. Every column spelled out its owner
+ * ("Reported Forecast by Retailer"), repeating in each header what a group header says
+ * once. Nine hundred pixels of table for seven values, overflowing a 1300px window.
+ *
+ * Crisis fits TEN columns in ~400px because the top row groups by WHO and the bottom row
+ * carries short labels. Same widget, a mode infoshare simply was not using — I built the
+ * group/sub model in slice 3, noted infoshare's flat seven "falls out of the model", and
+ * drew the wrong conclusion: the model was right and the table was the wrong shape.
+ *
+ * ⚠ NO STYLE VALUES HERE. Padding, font sizes, row height, the two-row header and the
+ * `mine` shading all live in the shared widget, so this cannot drift from crisis by
+ * inventing its own numbers — which is exactly what the breakout div did.
+ * `mine` also renders the block header as "You (Retailer)" / "You (Supplier)".
+ */
 function sections(viewerRole?: Role) {
   return [
     col<RoundRecord>('round', 'Period', (h) => h.round, { align: 'left' }),
-    col<RoundRecord>('demandType', 'Actual Forecast', (h) => h.demandType),
-    col<RoundRecord>('message', 'Reported Forecast by Retailer', (h) => h.message),
-    col<RoundRecord>('production', 'Production', (h) => h.production),
-    col<RoundRecord>('actualDemand', 'Customer Demand', (h) => h.actualDemand),
-    // Both profits, to both roles. The viewer's OWN column is bolded so they can find
-    // themselves at a glance — emphasis only; the numbers shown are the same either way.
-    col<RoundRecord>('profitR', "Retailer's Profit",
-      (h) => mineIf(viewerRole === 'retailer', money(h.profits.retailer)),
-      { testId: (h) => `retailer-profit-${h.round}` }),
-    col<RoundRecord>('profitS', "Supplier's Profit",
-      (h) => mineIf(viewerRole === 'supplier', money(h.profits.supplier)),
-      { testId: (h) => `supplier-profit-${h.round}` }),
+
+    group<RoundRecord>('retailer', 'Retailer', [
+      sub('message', 'Reported', (h) => h.message),
+      sub('profitR', 'Profit', (h) => money(h.profits.retailer),
+        { testId: (h) => `retailer-profit-${h.round}` }),
+    ], { mine: viewerRole === 'retailer' }),
+
+    group<RoundRecord>('supplier', 'Supplier', [
+      sub('production', 'Produced', (h) => h.production),
+      sub('profitS', 'Profit', (h) => money(h.profits.supplier),
+        { testId: (h) => `supplier-profit-${h.round}` }),
+    ], { mine: viewerRole === 'supplier' }),
+
+    /*
+      WHAT REALLY HAPPENED. Belongs to neither seat, so it takes no `mine` shading.
+      ⚠ Both cells are public to BOTH seats once the round resolves — that is what makes
+      a report that did not match discoverable one round later.
+    */
+    group<RoundRecord>('demand', 'Demand', [
+      sub('demandType', 'Type', (h) => h.demandType),
+      sub('sold', 'Sold', (h) => h.sales),
+    ]),
   ]
 }
 
@@ -102,10 +126,8 @@ export default function HistoryTable({ history, viewerRole }: { history: RoundRe
       />
       {history.length > 0 && (
         <p style={{ color: colors.textSecondary, fontSize: '0.75rem', margin: '0.4rem 0 0' }}>
-          Actual Forecast and Customer Demand are what really happened — both players
-          see them once the round is over.
-          {viewerRole ? ' Your profit column is in bold.' : ''}
-          {' '}On a narrow screen, scroll the table sideways to see all seven columns.
+          The Demand block is what really happened — both players see it once the round
+          is over.{viewerRole ? ' Your own block is shaded.' : ''}
         </p>
       )}
     </div>

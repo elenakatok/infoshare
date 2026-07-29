@@ -316,7 +316,9 @@ async function main() {
       wrapScrollW: wrap.scrollWidth,
       wrapOverflow: getComputedStyle(wrap).overflowX,
       grandW: Math.round(wrap.parentElement.getBoundingClientRect().width),
-      cols: ths.map((h) => [h.textContent.trim().slice(0, 22), Math.round(h.getBoundingClientRect().width)]),
+      // ⚠ LEAF columns from the BODY. `thead th` counts 10 in grouped mode (4 block
+      // headers + 6 sub-headers), which is not the number of values in a row.
+      cols: [...t.querySelectorAll('tbody tr:first-child td')].map((c, i) => [String(i), Math.round(c.getBoundingClientRect().width)]),
     }
   })
   /*
@@ -344,34 +346,73 @@ async function main() {
     (3) is the one the breakout div broke: the table moved out of normal flow, so the
     document grew instead of the container.
   */
-  await supplier.setViewportSize({ width: 570, height: 1000 })
-  await sleep(500)
-  const n = await supplier.evaluate(() => {
-    const t = document.querySelector('[data-testid="game-history"]')
-    const wrap = t.parentElement
-    return {
-      tableW: Math.round(t.getBoundingClientRect().width),
-      boxClientW: wrap.clientWidth,
-      boxScrollW: wrap.scrollWidth,
-      overflowX: getComputedStyle(wrap).overflowX,
-      docScrollW: document.documentElement.scrollWidth,
-      viewportW: window.innerWidth,
-    }
-  })
-  console.log(`  narrow(570): table ${n.tableW}px, box client ${n.boxClientW}/scroll ${n.boxScrollW} ` +
-    `(overflow-x: ${n.overflowX}), document ${n.docScrollW} vs viewport ${n.viewportW}`)
-  const wider = n.boxScrollW > n.boxClientW
-  const scrolls = n.overflowX === 'auto' || n.overflowX === 'scroll'
-  const pageStill = n.docScrollW <= n.viewportW + 1
-  console.log(wider ? '  ✓ at 570px the table overflows its box (the case that can fail)'
-                    : '  ✗ at 570px nothing overflows — the assertion is vacuous')
-  console.log(scrolls ? '  ✓ and its own container scrolls horizontally'
-                      : `  ✗ the container does not scroll (overflow-x: ${n.overflowX})`)
-  console.log(pageStill ? '  ✓ and the PAGE does not scroll sideways'
-                        : `  ✗ the PAGE scrolls sideways (${n.docScrollW} > ${n.viewportW})`)
-  if (!(wider && scrolls && pageStill)) process.exitCode = 1
+  /*
+    ⚠ RESIZE, DO NOT RELOAD. A load-at-each-width test passed on the broken table: a
+    fresh load re-lays-out from scratch, while the real complaint is a window being
+    dragged. Resizing the SAME page is the case that actually failed.
+
+    ⚠ 1300px IS THE HEADLINE NUMBER. The flat seven overflowed there; grouped mode must
+    fit with no scrollbar at all. 570px must still scroll the TABLE and never the PAGE.
+  */
+  const measure = async (w) => {
+    await supplier.setViewportSize({ width: w, height: 900 })
+    await sleep(600)
+    return supplier.evaluate(() => {
+      const t = document.querySelector('[data-testid="game-history"]')
+      const wrap = t.parentElement
+      const de = document.documentElement
+      return {
+        subCols: t.querySelectorAll('thead tr:last-child th').length,
+        leafCols: t.querySelectorAll('tbody tr:first-child td').length,
+        headerRows: t.querySelectorAll('thead tr').length,
+        tableW: Math.round(t.getBoundingClientRect().width),
+        boxClientW: wrap.clientWidth,
+        boxScrollW: wrap.scrollWidth,
+        docScrollW: de.scrollWidth,
+        viewportW: window.innerWidth,
+      }
+    })
+  }
+
+  const wide = await measure(1300)
+  console.log(`  @1300: ${wide.headerRows} header rows, ${wide.leafCols} leaf cols (${wide.subCols} grouped), table ${wide.tableW}px ` +
+    `in ${wide.boxClientW}px (scrollW ${wide.boxScrollW}) · page ${wide.docScrollW}/${wide.viewportW}`)
+  const fitsWide = wide.boxScrollW <= wide.boxClientW + 1
+  const twoRows = wide.headerRows === 2
+  console.log(twoRows ? '  ✓ two header rows (grouped mode)' : `  ✗ ${wide.headerRows} header row(s) — not grouped`)
+  console.log(fitsWide ? '  ✓ @1300 fits with NO horizontal scroll' : `  ✗ @1300 still overflows (${wide.boxScrollW} > ${wide.boxClientW})`)
+
+  /*
+    ⚠ 570 NO LONGER OVERFLOWS, AND THAT IS THE POINT. Grouped mode shrank the table from
+    ~900px to ~470px, so at 570 it FITS — the old assertion ("the table must scroll here")
+    was asserting the broken behaviour and had to be replaced rather than kept green.
+
+    The real requirement is: the page NEVER scrolls sideways at any width, and the table
+    scrolls inside its own box only when the window is GENUINELY too narrow. So 570 checks
+    the first, and a deliberately cramped 360 checks the second — otherwise "it scrolls
+    when needed" is untested at every width.
+  */
+  const narrow = await measure(570)
+  console.log(`  @570 : table ${narrow.tableW}px in ${narrow.boxClientW}px (scrollW ${narrow.boxScrollW}) · page ${narrow.docScrollW}/${narrow.viewportW}`)
+  const fits570 = narrow.boxScrollW <= narrow.boxClientW + 1
+  const pageStill = narrow.docScrollW <= narrow.viewportW + 1
+  console.log(fits570 ? '  ✓ @570 fits with no scrollbar at all' : '  · @570 the table scrolls in its box (acceptable)')
+  console.log(pageStill ? '  ✓ @570 the PAGE does not scroll sideways' : `  ✗ @570 the page scrolls (${narrow.docScrollW} > ${narrow.viewportW})`)
+
+  const tiny = await measure(360)
+  console.log(`  @360 : table ${tiny.tableW}px in ${tiny.boxClientW}px (scrollW ${tiny.boxScrollW}) · page ${tiny.docScrollW}/${tiny.viewportW}`)
+  const tableScrolls = tiny.boxScrollW > tiny.boxClientW
+  const pageStillTiny = tiny.docScrollW <= tiny.viewportW + 1
+  console.log(tableScrolls ? '  ✓ @360 genuinely too narrow — the TABLE scrolls in its own box'
+                           : '  ✗ @360 nothing overflows — the scroll path is untested')
+  console.log(pageStillTiny ? '  ✓ @360 the PAGE still does not scroll sideways'
+                            : `  ✗ @360 the page scrolls (${tiny.docScrollW} > ${tiny.viewportW})`)
+
+  if (!(twoRows && fitsWide && pageStill && tableScrolls && pageStillTiny)) process.exitCode = 1
   await supplier.screenshot({ path: path.join(OUT, '17-history-570px.png'), fullPage: false })
-  console.log('  ✓ 17-history-570px.png')
+  await measure(1300)
+  await supplier.screenshot({ path: path.join(OUT, '18-history-1300px.png'), fullPage: false })
+  console.log('  ✓ 17-history-570px.png, 18-history-1300px.png')
   await supplier.setViewportSize({ width: 1100, height: Number(process.env.VH) || 1250 })
   if (m.cols.length !== 7) {
     console.log(`  ✗ the history table has ${m.cols.length} columns, not the seven in spec §1.2`)
