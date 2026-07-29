@@ -109,32 +109,33 @@ export const submitStaticKnowledgeCheckQuestion = (data: object = {}) =>
 // seat may see; this file only says what to expect. Widening a type here does not make
 // a field arrive, and — more dangerously — it does not make a leak safe.
 
-export type StageId = 'signal' | 'respond'
+export type StageId = 'message' | 'production'
 export type Role = 'retailer' | 'supplier'
-export type DrawnState = 'up' | 'down'
+export type DemandType = 'HIGH' | 'LOW'
+export type Lots = 1 | 2 | 3
 
-/** One completed round. Identical for both seats — history has no secrets. */
+/** One completed round. Identical for both seats — history has no secrets (spec §1.2). */
 export type RoundRecord = {
   round: number
   retailerSeat: number
   supplierSeat: number
-  signal: DrawnState
-  quantity: number
-  state: DrawnState
-  sold: number
+  message: DemandType
+  production: Lots
+  demandType: DemandType
+  actualDemand: Lots
+  sales: number
   profits: { retailer: number; supplier: number }
+  /** message === demandType. Drives the Tier-3 trustworthiness series. */
+  truthful: boolean
   defaulted: { retailer: boolean; supplier: boolean }
 }
 
 /**
- * The per-seat view. This is ALSO the exact object exposed to the page for the robot
- * driver (`window.__gameState`) — one shape, so the bot can never see more than the
- * student whose seat it is playing.
+ * The per-seat view. Also the exact object exposed to the page for the robot driver.
  *
- * ⚠ `state` IS OPTIONAL, AND THAT IS THE WHOLE MECHANISM. When the reveal rule
- * withholds the round's hidden draw, THE KEY IS ABSENT — not null. Test presence
- * (`'state' in view`) or compare strictly; `view.state == null` and `view.state ?? x`
- * both quietly turn "hidden" into a value and are how a reveal bug ships.
+ * ⚠ `demandType` and `actualDemand` ARE OPTIONAL AND THAT IS THE MECHANISM. When the
+ * reveal rule withholds a draw the KEY IS ABSENT — not null. Test presence
+ * (`'demandType' in view`); `== null` and `?? x` both quietly turn hidden into a value.
  */
 export type SeatView = {
   seat: number
@@ -144,8 +145,9 @@ export type SeatView = {
   numRounds: number | null
   stage: StageId | null
   owes: StageId | null
-  currentSignal: DrawnState | null
-  state?: DrawnState
+  currentMessage: DemandType | null
+  demandType?: DemandType
+  actualDemand?: Lots
   history: RoundRecord[]
   pendingCount: number
 }
@@ -162,11 +164,11 @@ export type RoundViewResult = {
 export const getRoundView = (groupId: string) =>
   callFn<RoundViewResult>('getRoundView', { group_id: groupId })
 
-export const submitSignal = (groupId: string, signal: DrawnState) =>
-  callFn<{ ok: boolean; reason?: string }>('submitSignal', { group_id: groupId, signal })
+export const submitMessage = (groupId: string, message: DemandType) =>
+  callFn<{ ok: boolean; reason?: string }>('submitMessage', { group_id: groupId, message })
 
-export const submitRespond = (groupId: string, quantity: number) =>
-  callFn<{ ok: boolean; reason?: string }>('submitRespond', { group_id: groupId, quantity })
+export const submitProduction = (groupId: string, production: Lots) =>
+  callFn<{ ok: boolean; reason?: string }>('submitProduction', { group_id: groupId, production })
 
 export const checkRoundClock = (groupId: string) =>
   callFn<{ ok: boolean; expired?: boolean }>('checkRoundClock', { group_id: groupId })

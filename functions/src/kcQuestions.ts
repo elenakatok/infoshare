@@ -170,9 +170,17 @@ export const FREE_TEXT_QUESTIONS: Question[] = [
     'Before you start: if you end up as Supplier, how much do you expect Retailer\'s signal to be worth to you — and why?',
     'A sentence or two is plenty.'),
 
+  // ⚠ VERBATIM from Information_Sharing_KC_Questions_v1.md Q9. Not a paraphrase — this
+  // is the prompt Elena reads answers to when building the 9/28 lecture, and the Tier 2
+  // report is grouped by role because Retailer and Supplier answers read very
+  // differently.
   freeText('debrief_reflection', 20, 'debrief',
-    'Looking back over the whole game: when did you tell the truth or believe what you were told, and what changed your mind?',
-    'Write as much as you like.'),
+    'As the Retailer, when did you report the demand type honestly and when didn\'t you — ' +
+    'and why? As the Supplier, when did you believe the message and when did you stop? ' +
+    'Describe one specific round where something that happened earlier in the game ' +
+    'changed what you did.',
+    'There are no wrong answers here. A short paragraph is enough. Write about what you ' +
+    'actually did rather than what you think you should have done.'),
 ]
 
 /** Everything, in the order the platform serves it. */

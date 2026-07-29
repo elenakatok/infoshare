@@ -28,28 +28,29 @@ import type { RoundRecord, Role } from '../api'
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const money = (n: number) => num(n)
-const arrow = (s: string) => (s === 'up' ? 'Up' : 'Down')
+
 
 /** The viewer's own block is marked `mine` and lightly shaded. */
 function sections(viewerRole?: Role) {
   return [
     col<RoundRecord>('round', 'Round', (h) => h.round, { align: 'left' }),
     group<RoundRecord>('retailer', 'Retailer', [
-      sub('signal', 'Signal', (h) => arrow(h.signal)),
-      sub('profitA', 'Profit', (h) => money(h.profits.retailer), {
+      sub('message', 'Reported', (h) => h.message),
+      sub('profitR', 'Profit', (h) => money(h.profits.retailer), {
         testId: (h) => `retailer-profit-${h.round}`,
       }),
     ], { mine: viewerRole === 'retailer' }),
     group<RoundRecord>('supplier', 'Supplier', [
-      sub('quantity', 'Quantity', (h) => h.quantity),
-      sub('profitB', 'Profit', (h) => money(h.profits.supplier), {
+      sub('production', 'Produced', (h) => h.production),
+      sub('profitS', 'Profit', (h) => money(h.profits.supplier), {
         testId: (h) => `supplier-profit-${h.round}`,
       }),
     ], { mine: viewerRole === 'supplier' }),
-    // The truth, revealed. Deliberately the LAST column: a student reads left to right
-    // and should meet what was claimed before what was true.
-    col<RoundRecord>('state', 'Actual', (h) => arrow(h.state)),
-    col<RoundRecord>('sold', 'Sold', (h) => h.sold),
+    // The truth, revealed. Deliberately AFTER what was claimed: a student reads left to
+    // right and should meet the report before the reality — which is the lesson.
+    col<RoundRecord>('demandType', 'Actual type', (h) => h.demandType),
+    col<RoundRecord>('actualDemand', 'Demand', (h) => h.actualDemand),
+    col<RoundRecord>('sales', 'Sold', (h) => h.sales),
   ]
 }
 
@@ -64,8 +65,9 @@ export default function HistoryTable({ history, viewerRole }: { history: RoundRe
       emptyMessage="No completed rounds yet."
       caption={
         <span style={{ color: colors.textSecondary }}>
-          “Actual” is what really happened that round — it becomes visible to both
-          players once the round is over.
+          “Actual type” and “Demand” are what really happened — both become visible to both
+          players once the round is over, which is why a misleading report is always found
+          out one round later.
           {viewerRole ? ' Your block is highlighted.' : ''}
         </span>
       }

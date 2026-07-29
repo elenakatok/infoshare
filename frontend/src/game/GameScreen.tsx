@@ -4,8 +4,8 @@ import {
 } from '@mygames/game-ui'
 import type { AdvancePolicy } from '@mygames/game-ui'
 import {
-  getRoundView, submitSignal, submitRespond, checkRoundClock,
-  type RoundViewResult, type DrawnState,
+  getRoundView, submitMessage, submitProduction, checkRoundClock,
+  type RoundViewResult, type DemandType, type Lots,
 } from '../api'
 import HistoryTable from './HistoryTable'
 import ClockBar from './ClockBar'
@@ -135,12 +135,12 @@ export default function GameScreen({
           history={<HistoryTable history={v.history} viewerRole={v.role} />}
         >
           <p data-testid="result-line">
-            Retailer signalled <strong>{row.signal}</strong>; the actual state was{' '}
-            <strong>{row.state}</strong>. Supplier committed <strong>{row.quantity}</strong> and{' '}
-            <strong>{row.sold}</strong> sold.
+            The Retailer reported <strong>{row.message}</strong>; the true type was{' '}
+            <strong>{row.demandType}</strong> and demand was <strong>{row.actualDemand}</strong>.{' '}
+            The Supplier produced <strong>{row.production}</strong>; <strong>{row.sales}</strong> sold.
           </p>
           <p data-testid="result-profits">
-            Retailer earned <strong>{row.profits.retailer}</strong>; Supplier earned{' '}
+            The Retailer earned <strong>{row.profits.retailer}</strong>; the Supplier earned{' '}
             <strong>{row.profits.supplier}</strong>.
           </p>
         </RoundResultsScreen>
@@ -183,33 +183,33 @@ export default function GameScreen({
         ABSENT, and a nullish test written the easy way turns "hidden" into a rendered
         value the moment someone changes the server to send null.
       */}
-      {'state' in v && (
+      {'demandType' in v && (
         <p data-testid="private-state" style={{ padding: spacing.gapSm, background: '#fef3c7', borderRadius: 4 }}>
-          Only you can see this: the true state this round is <strong>{v.state}</strong>.
+          Only you can see this: the true demand type this round is <strong>{v.demandType}</strong>.
         </p>
       )}
 
-      {v.owes === 'signal' && (
+      {v.owes === 'message' && (
         <Choices
-          label="Send your signal to Supplier. It does not have to be true."
-          testId="signal-choices"
-          options={[{ value: 'up', label: 'Up' }, { value: 'down', label: 'Down' }]}
+          label="Report the demand type to the Supplier. It does not have to be true."
+          testId="message-choices"
+          options={[{ value: 'HIGH', label: 'HIGH' }, { value: 'LOW', label: 'LOW' }]}
           disabled={busy}
-          onPick={(val) => act(() => submitSignal(groupId, val as DrawnState))}
+          onPick={(val) => act(() => submitMessage(groupId, val as DemandType))}
         />
       )}
 
-      {v.owes === 'respond' && (
+      {v.owes === 'production' && (
         <>
-          <p data-testid="signal-received">
-            Retailer signalled <strong>{v.currentSignal ?? '—'}</strong>.
+          <p data-testid="message-received">
+            The Retailer reported <strong>{v.currentMessage ?? '—'}</strong>.
           </p>
           <Choices
-            label="Choose your quantity."
-            testId="quantity-choices"
+            label="Choose your production, in lots."
+            testId="production-choices"
             options={[1, 2, 3].map((n) => ({ value: String(n), label: String(n) }))}
             disabled={busy}
-            onPick={(val) => act(() => submitRespond(groupId, Number(val)))}
+            onPick={(val) => act(() => submitProduction(groupId, Number(val) as Lots))}
           />
         </>
       )}

@@ -1,47 +1,83 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  RosterReport, RosterNameCell, StudentDecisionDetail,
-  FreeTextReportSet, RoundSeriesChart, buildRoundSeries,
-  col, sub, group,
-  typography, colors, spacing, layout,
+  GameHeader, ReportBoard, RosterReport, RosterNameCell, FreeTextReportSet,
+  type ReportTileConfig, type SortableColumn, type RosterReportRow, type FreeTextAnswer,
 } from '@mygames/game-ui'
-import type { RosterReportRow, SortableColumn, FreeTextAnswer, RoundObservation } from '@mygames/game-ui'
-import { getReportData, getRoundReport, type StudentRoundRow, type Role, type ReportRow } from '../api'
+import { getReportData, getRoundReport, type StudentRoundRow, type ReportRow } from '../api'
 import { ALL_QUESTIONS } from '../../../functions/src/kcQuestions'
+import { babblingVsCredible } from '../../../functions/src/round/resolver'
+import { DEFAULT_ROUND_SETTINGS } from '../../../functions/src/round/settings'
+import {
+  trustworthiness, trust, reciprocity, summary, benchmarkDistance, behavioural,
+} from '../reports/analytics'
+import { TrustworthinessChart, TrustChart, ReciprocityScatter } from '../reports/Charts'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE REPORTS PAGE (Reports Contract v2) — ⚠ PLACEHOLDER_GAME series (spawn Part 1).
+// REPORTS — Information Sharing.
 //
-//   Tier 1a  ROSTER          one row per student, summary measures.  RosterReport
-//   Tier 1b  PER-STUDENT     that student's decisions, round by round.
-//   Tier 2   FREE TEXT       one report per free-text question. MANDATORY, gated.
-//   Tier 3   SERIES          per-round class charts.
+// Structure, tile styling and spacing follow CRISIS's Reports.tsx: a header bar, a
+// ReportBoard of tiles, a modal per tile, the same Figure card and table density.
+// Infoshare must not be visually distinguishable as a different generation of page.
 //
-// ⚠ TIER 2 IS NOT OPTIONAL WHEN FREE-TEXT QUESTIONS EXIST. `reports/tier2Gate.test.ts`
-// fails the build if one is missing. Adding a question means adding its report and its
-// id to reports/reportIds.ts, in the same commit.
+// ── WHAT THIS PAGE IS FOR ────────────────────────────────────────────────────
+// TRUST and TRUSTWORTHINESS. Not "average production by round" — that is a statistic,
+// not the analysis. Every tile serves one question: did the Retailer tell the truth, did
+// the Supplier believe it, and did the two travel together?
 //
-// ── THE ONE RULE THAT IS EASY TO GET WRONG ───────────────────────────────────
-// A round resolved by a CLOCK DEFAULT is shown in Tier 1b and EXCLUDED from Tier 3 —
-// from the series AND from that round's n= denominator. `buildRoundSeries` defaults to
-// excluding them, so the correct behaviour is the one you get by not thinking about it;
-// charting them takes an explicit `excludeDefaulted: false`, which is the right way
-// round. A default is a record of absence, not a decision, and because a sensible
-// default is usually the modal choice it biases a series rather than just adding noise.
+// ⚠ DEFAULTED ROUNDS ARE EXCLUDED EVERYWHERE (spec §10.1) — see reports/analytics.ts.
+// ⚠ THE BENCHMARKS ARE DERIVED from `babblingVsCredible`, never typed. A settings edit
+//    must move them, which is the entire reason that solver exists.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+const pct = (r: number | null) => (r === null ? '—' : `${(r * 100).toFixed(0)}%`)
+const two = (n: number | null) => (n === null ? '—' : n.toFixed(2))
+
+function Modal({ title, wide, onClose, children }: { title: string; wide?: boolean; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '3rem 1rem', zIndex: 1000, overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.25)', width: '100%', maxWidth: wide ? 'min(1100px, calc(100vw - 2rem))' : 'min(900px, calc(100vw - 2rem))', boxSizing: 'border-box', maxHeight: 'calc(100vh - 6rem)', overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+          <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>{title}</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '1.25rem', cursor: 'pointer', color: '#666' }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function Figure({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <div style={{ border: '1px solid #eee', borderRadius: 8, padding: '0.75rem 1rem', minWidth: 170 }}>
+      <div style={{ fontSize: '0.75rem', color: '#666' }}>{label}</div>
+      <div style={{ fontSize: '1.4rem', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      {note && <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{note}</div>}
+    </div>
+  )
+}
+
+const IS_TH: React.CSSProperties = {
+  textAlign: 'left', padding: '0.4rem 0.7rem', borderBottom: '2px solid #ddd',
+  fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap', background: '#faf7f2',
+}
+const IS_TD: React.CSSProperties = {
+  padding: '0.4rem 0.7rem', borderBottom: '1px solid #eee',
+  fontSize: '0.85rem', fontVariantNumeric: 'tabular-nums',
+}
 
 interface Row extends RosterReportRow {
   roundsPlayed: number
   totalProfit: number
+  truthAboutLow: number | null
 }
-
-type ColKey = 'name' | 'group' | 'role' | 'rounds' | 'profit'
+type ColKey = 'name' | 'group' | 'role' | 'rounds' | 'profit' | 'truth'
 
 export default function Reports() {
   const [rows, setRows] = useState<Row[]>([])
   const [roundRows, setRoundRows] = useState<StudentRoundRow[]>([])
   const [answers, setAnswers] = useState<Record<string, FreeTextAnswer[]>>({})
-  const [selected, setSelected] = useState<string | null>(null)
+  const [active, setActive] = useState<string | null>(null)
+  const [groupPick, setGroupPick] = useState<string>('all')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -50,34 +86,41 @@ export default function Reports() {
         const [base, rounds] = await Promise.all([getReportData(), getRoundReport()])
         setRoundRows(rounds.rows)
 
-        // Per-student totals, derived from the round data rather than stored twice.
-        const byPid = new Map<string, { rounds: number; profit: number; role: Role | null; groupNumber: number }>()
+        const agg = new Map<string, { rounds: number; profit: number; role: string | null; groupNumber: number; lowTrue: number; lowTold: number }>()
         for (const r of rounds.rows) {
+          const live = !(r.defaulted.retailer || r.defaulted.supplier)
           for (const seat of [r.retailerSeat, r.supplierSeat]) {
             const pid = r.pidBySeat[seat]
             if (!pid || pid.startsWith('bot_')) continue
             const role = r.roleBySeat[seat] ?? null
             const profit = role === 'retailer' ? r.profits.retailer : r.profits.supplier
-            const cur = byPid.get(pid) ?? { rounds: 0, profit: 0, role, groupNumber: r.groupNumber }
-            byPid.set(pid, { rounds: cur.rounds + 1, profit: cur.profit + profit, role, groupNumber: r.groupNumber })
+            const cur = agg.get(pid) ?? { rounds: 0, profit: 0, role, groupNumber: r.groupNumber, lowTrue: 0, lowTold: 0 }
+            cur.rounds += 1
+            cur.profit += profit
+            // Truth-about-LOW counts BEHAVIOUR only — a defaulted round is not a choice.
+            if (role === 'retailer' && r.demandType === 'LOW' && live) {
+              cur.lowTrue += 1
+              if (r.truthful) cur.lowTold += 1
+            }
+            agg.set(pid, cur)
           }
         }
 
         setRows((base.rows ?? []).map((p: ReportRow): Row => {
-          const agg = byPid.get(p.participant_id)
+          const a = agg.get(p.participant_id)
           return {
             participantId: p.participant_id,
             name: p.display_name,
-            groupNumber: agg?.groupNumber ?? null,
-            role: agg?.role ?? null,
+            groupNumber: a?.groupNumber ?? null,
+            role: a?.role ?? null,
             rawScore: p.raw_score,
-            absent: !agg,
-            roundsPlayed: agg?.rounds ?? 0,
-            totalProfit: agg?.profit ?? 0,
+            absent: !a,
+            roundsPlayed: a?.rounds ?? 0,
+            totalProfit: a?.profit ?? 0,
+            truthAboutLow: a && a.role === 'retailer' && a.lowTrue > 0 ? a.lowTold / a.lowTrue : null,
           }
         }))
 
-        // Tier 2 answers, keyed by question field.
         const byQuestion: Record<string, FreeTextAnswer[]> = {}
         for (const q of base.questions ?? []) byQuestion[q.field] = []
         for (const p of base.rows ?? []) {
@@ -85,7 +128,7 @@ export default function Reports() {
             byQuestion[q.field]?.push({
               participantId: p.participant_id,
               name: p.display_name,
-              role: byPid.get(p.participant_id)?.role ?? null,
+              role: agg.get(p.participant_id)?.role ?? null,
               answer: p.text_answers?.[q.field] ?? null,
             })
           }
@@ -97,123 +140,206 @@ export default function Reports() {
     })()
   }, [])
 
+  const scoped = useMemo(
+    () => (groupPick === 'all' ? roundRows : roundRows.filter((r) => r.group_id === groupPick)),
+    [roundRows, groupPick],
+  )
+  const groups = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const r of roundRows) m.set(r.group_id, r.groupNumber)
+    return [...m.entries()].sort((a, b) => a[1] - b[1])
+  }, [roundRows])
+
+  const tw = useMemo(() => trustworthiness(scoped), [scoped])
+  const tr = useMemo(() => trust(scoped), [scoped])
+  const pairs = useMemo(() => reciprocity(roundRows), [roundRows])
+  const sum = useMemo(() => summary(scoped), [scoped])
+  const bench = useMemo(
+    () => benchmarkDistance(sum, babblingVsCredible(DEFAULT_ROUND_SETTINGS)),
+    [sum],
+  )
+
   const columns: SortableColumn<Row, ColKey>[] = useMemo(() => [
     { key: 'name', label: 'Student', render: (r) => <RosterNameCell row={r} />, compare: (a, b) => a.name.localeCompare(b.name) },
     { key: 'group', label: 'Group', render: (r) => r.groupNumber ?? '—', compare: (a, b) => (a.groupNumber ?? -1) - (b.groupNumber ?? -1) },
-    { key: 'role', label: 'Role', render: (r) => r.role ?? '—', compare: (a, b) => (a.role ?? '').localeCompare(b.role ?? '') },
+    { key: 'role', label: 'Role', render: (r) => (r.role === 'retailer' ? 'Retailer' : r.role === 'supplier' ? 'Supplier' : '—'), compare: (a, b) => (a.role ?? '').localeCompare(b.role ?? '') },
     { key: 'rounds', label: 'Rounds', render: (r) => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed },
     {
+      key: 'truth', label: 'Truth about LOW',
+      render: (r) => (r.role === 'retailer' ? pct(r.truthAboutLow) : '—'),
+      compare: (a, b) => (a.truthAboutLow ?? -1) - (b.truthAboutLow ?? -1),
+      nullsLast: true, isNull: (r) => r.truthAboutLow === null,
+    },
+    {
       key: 'profit', label: 'Total profit',
-      render: (r) => (r.absent ? '—' : r.totalProfit),
+      render: (r) => (r.absent ? '—' : r.totalProfit.toFixed(0)),
       compare: (a, b) => a.totalProfit - b.totalProfit,
-      // A no-show has no profit, and a floor value is not a low value: sorting them to
-      // the bottom in BOTH directions keeps "worst performers" honest.
-      nullsLast: true,
-      isNull: (r) => !!r.absent,
+      nullsLast: true, isNull: (r) => !!r.absent,
     },
   ], [])
 
-  // ── Tier 3: average quantity by round, defaults excluded (the default) ───────
-  const quantitySeries = useMemo(() => {
-    const obs: RoundObservation[] = roundRows.map((r) => ({
-      round: r.round,
-      subject: `${r.group_id}:supplier`,
-      value: r.quantity,
-      defaulted: r.defaulted.supplier,
-    }))
-    return buildRoundSeries(obs)
-  }, [roundRows])
+  const hasData = behavioural(roundRows).length > 0
+  const scopeLabel = groupPick === 'all' ? 'whole class' : `group ${groups.find(([g]) => g === groupPick)?.[1]}`
 
-  const detailRows = useMemo(
-    () => (selected ? roundRows.filter((r) => Object.values(r.pidBySeat).includes(selected)) : []),
-    [roundRows, selected],
+  const tiles: ReportTileConfig[] = [
+    {
+      id: 'summary', title: 'Overall',
+      preview: hasData
+        ? <span data-testid="tile-summary" style={{ fontSize: '0.9rem', color: '#555' }}>headline numbers · distance from the benchmarks</span>
+        : <span data-testid="tile-summary" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No completed rounds yet.</span>,
+      onOpen: () => setActive('summary'), disabled: !hasData, actionLabel: 'Open ↗',
+    },
+    {
+      id: 'trustworthiness', title: 'Trustworthiness by round',
+      preview: hasData
+        ? <span data-testid="tile-trustworthiness" style={{ fontSize: '0.9rem', color: '#555' }}>truth told, split by what the truth was</span>
+        : <span data-testid="tile-trustworthiness" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No completed rounds yet.</span>,
+      onOpen: () => setActive('trustworthiness'), disabled: !hasData, actionLabel: 'Open ↗',
+    },
+    {
+      id: 'trust', title: 'Trust by round',
+      preview: hasData
+        ? <span data-testid="tile-trust" style={{ fontSize: '0.9rem', color: '#555' }}>average order after each kind of report</span>
+        : <span data-testid="tile-trust" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No completed rounds yet.</span>,
+      onOpen: () => setActive('trust'), disabled: !hasData, actionLabel: 'Open ↗',
+    },
+    {
+      id: 'reciprocity', title: 'Reciprocity',
+      preview: hasData
+        ? <span data-testid="tile-reciprocity" style={{ fontSize: '0.9rem', color: '#555' }}>{pairs.length} pair{pairs.length === 1 ? '' : 's'} · honesty against belief</span>
+        : <span data-testid="tile-reciprocity" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No completed rounds yet.</span>,
+      onOpen: () => setActive('reciprocity'), disabled: !hasData, actionLabel: 'Open ↗',
+    },
+    {
+      id: 'students', title: 'Per-student',
+      preview: rows.length
+        ? <span data-testid="tile-students" style={{ fontSize: '0.9rem', color: '#555' }}>{rows.length} students · sortable</span>
+        : <span data-testid="tile-students" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No students yet.</span>,
+      onOpen: () => setActive('students'), disabled: !rows.length, actionLabel: 'Open ↗',
+    },
+    {
+      id: 'debrief', title: 'Debrief answers',
+      preview: <span data-testid="tile-debrief" style={{ fontSize: '0.9rem', color: '#555' }}>free-text, grouped by role</span>,
+      onOpen: () => setActive('debrief'), actionLabel: 'Open ↗',
+    },
+  ]
+
+  if (error) return <div style={{ padding: '2rem', textAlign: 'center' }}><p style={{ color: '#c00' }}>{error}</p></div>
+
+  const ScopePicker = () => (
+    <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+      <label style={{ fontSize: '0.8rem', color: '#666' }}>Scope</label>
+      <select data-testid="scope-picker" value={groupPick} onChange={(e) => setGroupPick(e.target.value)}
+        style={{ fontSize: '0.85rem', padding: '0.2rem 0.4rem' }}>
+        <option value="all">Whole class</option>
+        {groups.map(([gid, n]) => <option key={gid} value={gid}>Group {n}</option>)}
+      </select>
+      <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+        {sum.rounds} round{sum.rounds === 1 ? '' : 's'} of behaviour
+        {sum.excludedDefaults > 0 && ` · ${sum.excludedDefaults} excluded (clock default)`}
+      </span>
+    </div>
   )
 
-  if (error) return <main style={{ padding: layout.pagePad }}><p role="alert">{error}</p></main>
-
   return (
-    <main style={{
-      padding: layout.pagePad, maxWidth: layout.maxWidth,
-      margin: '0 auto', fontFamily: typography.fontFamily,
-    }}>
-      <h1>Reports</h1>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <GameHeader />
+      <div style={{ padding: '1rem 1.5rem 0.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Reports — Information Sharing</h2>
+      </div>
 
-      <Section title="Tier 1a — roster">
-        <RosterReport<Row, ColKey>
-          rows={rows}
-          columns={columns}
-          initialSortKey="group"
-          testIds={{
-            root: 'roster-root',
-            table: 'roster-table',
-            row: (r) => `student-row-${r.participantId}`,
-          }}
-        />
-        <p style={{ fontSize: typography.sizeXs, color: colors.textSecondary }}>
-          Click a student below to see their round-by-round detail.
-        </p>
-        <select
-          data-testid="student-picker"
-          value={selected ?? ''}
-          onChange={(e) => setSelected(e.target.value || null)}
-        >
-          <option value="">— choose a student —</option>
-          {rows.map((r) => <option key={r.participantId} value={r.participantId}>{r.name}</option>)}
-        </select>
-      </Section>
+      <main style={{ flex: 1, padding: '1rem 1.5rem' }}>
+        <ReportBoard tiles={tiles} />
 
-      {selected && (
-        <Section title="Tier 1b — one student, round by round">
-          <StudentDecisionDetail<StudentRoundRow>
-            studentName={rows.find((r) => r.participantId === selected)?.name ?? selected}
-            rounds={detailRows}
-            // Defaulted rounds ARE shown here. Excluded from the charts, visible here —
-            // this is the "somewhere" they must remain visible.
-            isDefaulted={(r) => r.defaulted.retailer || r.defaulted.supplier}
-            sections={[
-              col<StudentRoundRow>('round', 'Round', (r) => r.round, { align: 'left' }),
-              group<StudentRoundRow>('play', 'This round', [
-                sub('signal', 'Signal', (r) => r.signal),
-                sub('quantity', 'Quantity', (r) => r.quantity),
-                sub('state', 'Actual', (r) => r.state),
-              ]),
-              col<StudentRoundRow>('sold', 'Sold', (r) => r.sold),
-            ]}
-          />
-        </Section>
-      )}
+        {active === 'summary' && (
+          <Modal title="Overall" onClose={() => setActive(null)}>
+            <ScopePicker />
+            <div data-testid="summary-figures" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <Figure label="Avg retailer profit" value={two(sum.retailerProfit)} note="per round" />
+              <Figure label="Avg supplier profit" value={two(sum.supplierProfit)} note="per round" />
+              <Figure label="Truthful about LOW" value={pct(sum.truthfulAboutLow)} note="where the game happens" />
+              <Figure label="Truthful about HIGH" value={pct(sum.truthfulAboutHigh)} note="near 1 by construction" />
+              <Figure label="Avg order after HIGH" value={two(sum.orderAfterHigh)} />
+              <Figure label="Avg order after LOW" value={two(sum.orderAfterLow)} />
+            </div>
 
-      <Section title="Tier 2 — free-text answers">
-        {/*
-          The set of reports IS the set of free-text questions — derived, never declared,
-          so a new question cannot be silently unreported. The gate test enforces it.
-        */}
-        <FreeTextReportSet
-          questions={ALL_QUESTIONS}
-          answersByQuestion={answers}
-          roleLabels={{ retailer: 'Retailer', supplier: 'Supplier' }}
-        />
-      </Section>
+            <p data-testid="benchmark-line" style={{ marginTop: '1rem', fontSize: '0.9rem', lineHeight: 1.6 }}>
+              <strong>Against the benchmarks.</strong> Babbling (the message ignored) pays
+              retailer {two(bench.babbling.retailer)} / supplier {two(bench.babbling.supplier)};
+              credible communication pays {two(bench.credible.retailer)} / {two(bench.credible.supplier)}.
+              This {scopeLabel} captured{' '}
+              <strong>{bench.share.retailer === null ? '—' : `${Math.round(bench.share.retailer * 100)}%`}</strong>{' '}
+              of the available gain for retailers and{' '}
+              <strong>{bench.share.supplier === null ? '—' : `${Math.round(bench.share.supplier * 100)}%`}</strong>{' '}
+              for suppliers.
+              <span style={{ color: '#94a3b8' }}> Both benchmarks are computed from the
+              current settings, so editing the demand triple moves them.</span>
+            </p>
+          </Modal>
+        )}
 
-      <Section title="Tier 3 — average quantity by round">
-        <RoundSeriesChart
-          series={[{ key: 'quantity', label: 'Average quantity', color: '#D38626', points: quantitySeries }]}
-          yDomain={[0, 3]}
-          formatValue={(v) => v.toFixed(2)}
-          ariaLabel="Average committed quantity by round"
-          testIdPrefix="tier3-quantity"
-          caption="Rounds resolved by a clock default are excluded, from the line and from the n= counts."
-        />
-      </Section>
-    </main>
-  )
-}
+        {active === 'trustworthiness' && (
+          <Modal title="Trustworthiness by round" wide onClose={() => setActive(null)}>
+            <ScopePicker />
+            <TrustworthinessChart data={tw} scope={scopeLabel} />
+          </Modal>
+        )}
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={{ marginBottom: spacing.gapXl }}>
-      <h2 style={{ fontSize: '1.05rem' }}>{title}</h2>
-      {children}
-    </section>
+        {active === 'trust' && (
+          <Modal title="Trust by round" wide onClose={() => setActive(null)}>
+            <ScopePicker />
+            <TrustChart data={tr} scope={scopeLabel} />
+          </Modal>
+        )}
+
+        {active === 'reciprocity' && (
+          <Modal title="Reciprocity — honesty against belief" onClose={() => setActive(null)}>
+            <ReciprocityScatter points={pairs} />
+            <div style={{ overflowX: 'auto', border: '1px solid #ddd', borderRadius: 6, marginTop: '1rem' }}>
+              <table data-testid="reciprocity-table" style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr>
+                  <th style={IS_TH}>Group</th><th style={IS_TH}>Truth about LOW</th>
+                  <th style={IS_TH}>Avg order after LOW</th><th style={IS_TH}>LOW rounds</th>
+                </tr></thead>
+                <tbody>
+                  {pairs.map((p) => (
+                    <tr key={p.groupId}>
+                      <td style={IS_TD}>{p.groupNumber}</td>
+                      <td style={IS_TD}>{pct(p.truthAboutLow)}</td>
+                      <td style={IS_TD}>{two(p.productionAfterLow)}</td>
+                      <td style={IS_TD}>{p.lowRounds}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Modal>
+        )}
+
+        {active === 'students' && (
+          <Modal title="Per-student" wide onClose={() => setActive(null)}>
+            <RosterReport<Row, ColKey>
+              rows={rows}
+              columns={columns}
+              initialSortKey="group"
+              testIds={{ root: 'roster-root', table: 'roster-table', row: (r) => `student-row-${r.participantId}` }}
+              cellStyles={{ header: IS_TH, cell: IS_TD }}
+            />
+          </Modal>
+        )}
+
+        {active === 'debrief' && (
+          <Modal title="Debrief answers" wide onClose={() => setActive(null)}>
+            {/* Grouped by role — Retailer and Supplier answers read very differently (Q9). */}
+            <FreeTextReportSet
+              questions={ALL_QUESTIONS}
+              answersByQuestion={answers}
+              groupByRole={{ debrief_reflection: true }}
+              roleLabels={{ retailer: 'Retailer', supplier: 'Supplier' }}
+            />
+          </Modal>
+        )}
+      </main>
+    </div>
   )
 }
