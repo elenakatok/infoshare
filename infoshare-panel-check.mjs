@@ -27,13 +27,28 @@ console.log(`  online panel: ${panel} | boundary tripped: ${boundary}`)
 // panel that renders nothing, which is exactly what optional chaining would have given.
 await page.locator('[data-testid="online-group-participants"]').click().catch(()=>{})
 await page.waitForTimeout(6000)
-const rows = await page.locator('[data-testid^="online-group-"]').count()
-const occupantsShown = (await page.locator('[data-testid="online-match-control"]').innerText().catch(()=>'')).match(/\d+\/\d+ seats/g) ?? []
-console.log(`  after clicking Group participants: ${rows} group row(s), seat labels: ${JSON.stringify(occupantsShown)}`)
+
+/*
+  ⚠ THE GROUP ROWS MOVED, AND THAT IS THE POINT OF THE CHANGE. They used to render inside
+  the online panel, BELOW a second list of the same groups in the Groups strip. Now there
+  is one list: the shared GroupsPanel, which merges the seat picture with the round status
+  onto one row. So this counts the panel's rows.
+
+  ⚠ AND IT ASSERTS THE DUPLICATE IS GONE. Counting the new rows alone would stay green if
+  the old list came back, and a second list is exactly the regression this turn removed —
+  it is what made the dashboard taller and sparser than crisis's for less information.
+  `online-group-participants` (the BUTTON) also matches the old `online-group-` prefix, so
+  the duplicate check excludes it explicitly rather than by prefix luck.
+*/
+const rows = await page.locator('[data-testid^="game-control-strip-row-"]').count()
+const dupRows = await page.locator('[data-testid^="online-group-"]:not([data-testid="online-group-participants"])').count()
+const seatLabels = (await page.locator('[data-testid="game-control-strip"]').innerText().catch(()=>'')).match(/\d+\/\d+/g) ?? []
+console.log(`  after clicking Group participants: ${rows} group row(s) in the Groups panel, seat labels: ${JSON.stringify(seatLabels)}`)
+console.log(`  duplicate group list in the online panel: ${dupRows} row(s) (must be 0)`)
 console.log(`  page errors: ${errors.length}${errors.length?' — '+errors[0]:''}`)
 
-const ok = toggle===1 && panel===1 && boundary===0 && rows>0 && occupantsShown.length>0 && errors.length===0
-console.log(ok ? '  ✓ toggle, panel, and REAL GROUP ROWS — no crash' : '  ✗ see above')
+const ok = toggle===1 && panel===1 && boundary===0 && rows>0 && dupRows===0 && seatLabels.length>0 && errors.length===0
+console.log(ok ? '  ✓ toggle, panel, ONE list of REAL GROUP ROWS with seat counts — no crash' : '  ✗ see above')
 await page.screenshot({path:'report-shots/22-online-panel.png',fullPage:true})
 await b.close()
 process.exitCode = ok?0:1

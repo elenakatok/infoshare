@@ -40,7 +40,7 @@ import { infoshareGameDef } from './gameDefinition'
 import { settingsFromConfig, DEFAULT_ROUND_SETTINGS } from './round/settings'
 import {
   openRoundState, applyAction, expireStage, buildSeatView, reviveState,
-  requiredSeats, stageIdOf, toHistoryRows,
+  requiredSeats, stageIdOf, toHistoryRows, roleOfSeat,
   type RoundState,
 } from './round/machine'
 import { STAGE_MESSAGE, STAGE_PRODUCTION, type SeatAction } from './round/spec'
@@ -519,6 +519,7 @@ export const getGameDashboard = onCall(CORS, async (request) => {
     const stored = byId.get(g.id)
     if (!stored) return { group_id: g.id, groupNumber: i + 1, started: false }
     const st = stored.state
+    const pending = requiredSeats(st, settings)
     return {
       group_id: g.id,
       groupNumber: i + 1,
@@ -527,7 +528,21 @@ export const getGameDashboard = onCall(CORS, async (request) => {
       round: st.round,
       numRounds: st.horizonBySeat[st.seats[0]] ?? null,
       stage: stageIdOf(st),
-      pending: requiredSeats(st, settings).length,
+      pending: pending.length,
+      /*
+        ⚠ WHICH SEAT, NOT HOW MANY. "waiting on 1 seat" tells an instructor a group is
+        stuck; "waiting on Supplier" tells them whom to go and talk to, which is the
+        entire reason the line exists. Crisis has carried the roles from the start and
+        this is the field that was missing here.
+
+        ⚠ THE ROLE IS SAFE TO PUBLISH; THE DRAW IS NOT. Roles are fixed for the whole
+        game and both students know both of them, so naming the seat that owes an action
+        reveals nothing the reveal rule is withholding. Do NOT extend this to the round
+        field — see the warning above the callable. Names are deliberately absent: the
+        dashboard is projected, and a name on a screen in front of the class is a
+        different thing from a role.
+      */
+      waitingOnRoles: pending.flatMap((seat) => { const r = roleOfSeat(st, seat); return r ? [r] : [] }),
       stage_deadline_ms: stored.stage_deadline_ms,
       // Deliberately NOT the hidden round field. See the warning above.
     }

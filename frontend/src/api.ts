@@ -204,6 +204,13 @@ export type DashboardGroup = {
   numRounds?: number | null
   stage?: StageId | null
   pending?: number
+  /**
+   * WHICH seats owe an action, by role — "waiting on Supplier", not "waiting on 1 seat".
+   * Safe to show: roles are fixed and mutually known, so naming the seat that owes reveals
+   * nothing the reveal rule withholds. Names are deliberately NOT carried (the dashboard
+   * is projected).
+   */
+  waitingOnRoles?: string[]
   stage_deadline_ms?: number | null
   // ⚠ NO HIDDEN ROUND FIELD HERE. The dashboard is projected in a classroom and
   // students read it; anything withheld from a student must be withheld from it too.
