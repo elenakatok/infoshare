@@ -46,6 +46,52 @@ let PASS = 0, FAIL = 0
 const banner = (m) => console.log('\n' + '─'.repeat(72) + '\n' + m + '\n' + '─'.repeat(72))
 const check = (c, n) => { if (c) { PASS++; console.log(`  ✓ ${n}`) } else { FAIL++; console.log(`  ✗ FAIL: ${n}`) } }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * HOW MANY ROUNDS THIS HARNESS PLAYS — and why it is stated here.
+ *
+ * ⚠ THE COMPLETION ASSERTIONS USED TO DEPEND ON A DEFAULT, AND THE DEFAULT WAS A BUG.
+ * Neither the classroom nor the online block set `num_rounds`, so both ran at
+ * NUM_ROUNDS_DEFAULT — which was a literal `3` left behind from the placeholder game.
+ * "played 3 rounds → finished" was therefore green BECAUSE THE PRODUCT WAS WRONG. When the
+ * default was corrected to 10 (derived from DEFAULT_ROUND_SETTINGS), four assertions in
+ * this file went red on a game that had just been fixed.
+ *
+ * That is the §9 pattern inverted: not an assertion equally true of the broken state, but
+ * one that REQUIRED the broken state. The defence is the same either way — never let an
+ * expectation and the behaviour it checks come from the same place.
+ *
+ * So: the harness names its own round count, CONFIGURES it explicitly, and separately
+ * asserts THE CONFIG TOOK by reading `numRounds` back off the dashboard. A config that
+ * silently fails to apply now fails as "the config did not take" instead of surfacing as a
+ * mysterious "not finished" three assertions later.
+ */
+const ROUNDS = 3
+
+/**
+ * ⚠ NEGATIVE CONTROL — `ONE_ROUND_SHORT=1` plays ROUNDS-1 rounds and REQUIRES the
+ * completion assertions to fail.
+ *
+ * These four assertions have been seen to fail for the WRONG reason (a driver that
+ * overshot, on a game configured for ten rounds). Until they have been seen to fail for
+ * the RIGHT one — a game genuinely left one round short — they prove nothing. A green run
+ * under this flag means the completion checks are decoration.
+ *
+ * Same idiom as BLANK_HISTORY=1 below and VH=900 in the screenshot harness.
+ */
+const NEG = process.env.ONE_ROUND_SHORT === '1'
+const ROUNDS_PLAYED = NEG ? ROUNDS - 1 : ROUNDS
+const checkCompletion = (c, n) => {
+  if (!NEG) return check(c, n)
+  if (c) {
+    FAIL++
+    console.log(`  ✗ FAIL: [negative control] ${n}\n         ...PASSED on a game left one round short — this assertion proves nothing`)
+  } else {
+    PASS++
+    console.log(`  ✓ [negative control] correctly failed: ${n}`)
+  }
+}
+
 async function callFn(name, data) {
   const res = await fetch(`${FUNCTIONS}/${name}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data }),
@@ -304,64 +350,114 @@ function assertHistoryRowComplete(row, role, where) {
 }
 
 /**
- * Play one round for a group, whoever holds which seat.
- *
- * ⚠ TWO PASSES, BECAUSE THE STAGES ARE SEQUENTIAL. The Supplier owes nothing until the
- * Retailer's message closes stage 1 — a single pass would find `owes: null` for the
- * Supplier and silently play half a round, and the round counter would never advance.
- *
- * The Retailer MISREPORTS in even rounds. A harness where every report is truthful never
- * exercises the case the game is about, and every leak assertion below would still pass
- * on a build that simply echoed the true type as the message.
+ * Every per-seat assertion made on one view read. Factored out because `playRound` now
+ * reads a view three times per round and each read is worth inspecting.
  */
-async function playRound(gid, groupId, pids, round) {
-  for (const pass of [1, 2]) {
-    for (const pid of pids) {
-      const v = await roundView(gid, pid, groupId)
-      if (!v.ok) continue
-      const { owes, role, demandType } = v.result.view
-
-      leakChecks += assertNoLeak(v.result.view, role, `round ${round} pass ${pass}`)
-      if (role === 'supplier') {
-        revealsAfter += v.result.view.history.filter(
-          (h) => h.demandType === 'HIGH' || h.demandType === 'LOW').length
+function inspectView(view, groupId, round, where) {
+  const { role } = view
+  leakChecks += assertNoLeak(view, role, `round ${round} ${where}`)
+  if (role === 'supplier') {
+    revealsAfter += view.history.filter(
+      (h) => h.demandType === 'HIGH' || h.demandType === 'LOW').length
+  }
+  // ⚠ BOTH ROLES. History has no secrets once a round is over, so a row that is
+  // complete for the retailer and gutted for the supplier is itself the bug.
+  for (const h of view.history) {
+    assertHistoryRowComplete(h, role, `round ${round} ${where}`)
+    // ⚠ KEYED BY GROUP, NOT JUST ROUND. Every group draws its own demand type, so a
+    // round-only key compares group A's round 3 with group B's and reports a
+    // disagreement that is simply two different games. Caught on the first run.
+    const key = `${groupId}:${h.round}`
+    const other = seatRows[key]
+    if (other && other.role !== role) {
+      // The two fields both seats must be able to reconcile after the fact.
+      if (other.demandType !== h.demandType || other.message !== h.message) {
+        historyRowFaults.push(
+          `r${h.round}: seats disagree — ${other.role} saw ${other.message}/${other.demandType}, ` +
+          `${role} saw ${h.message}/${h.demandType}`)
       }
-      // ⚠ BOTH ROLES. History has no secrets once a round is over, so a row that is
-      // complete for the retailer and gutted for the supplier is itself the bug.
-      for (const h of v.result.view.history) {
-        assertHistoryRowComplete(h, role, `round ${round} pass ${pass}`)
-        // ⚠ KEYED BY GROUP, NOT JUST ROUND. Every group draws its own demand type, so a
-        // round-only key compares group A's round 3 with group B's and reports a
-        // disagreement that is simply two different games. Caught on the first run.
-        const key = `${groupId}:${h.round}`
-        const other = seatRows[key]
-        if (other && other.role !== role) {
-          // The two fields both seats must be able to reconcile after the fact.
-          if (other.demandType !== h.demandType || other.message !== h.message) {
-            historyRowFaults.push(
-              `r${h.round}: seats disagree — ${other.role} saw ${other.message}/${other.demandType}, ` +
-              `${role} saw ${h.message}/${h.demandType}`)
-          }
-        } else {
-          seatRows[key] = { role, message: h.message, demandType: h.demandType }
-        }
-      }
-
-      if (owes === 'message') {
-        // The Retailer can see the true type — that is the one field they are allowed.
-        check(demandType === 'HIGH' || demandType === 'LOW',
-          `round ${round}: the retailer CAN see the true type (${demandType})`)
-        leakChecks += 1
-        const lie = round % 2 === 0
-        const msg = lie ? (demandType === 'HIGH' ? 'LOW' : 'HIGH') : demandType
-        await submitMessage(gid, pid, groupId, msg)
-      } else if (owes === 'production') {
-        // Believe the report: 3 lots on HIGH, 1 on LOW. Enough for a truthful and a
-        // misleading round to produce visibly different profits.
-        await submitProduction(gid, pid, groupId, v.result.view.currentMessage === 'HIGH' ? 3 : 1)
-      }
+    } else {
+      seatRows[key] = { role, message: h.message, demandType: h.demandType }
     }
   }
+}
+
+/**
+ * Play EXACTLY ONE ROUND for a group, whoever holds which seat.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * ⚠ THIS FUNCTION USED TO PLAY ONE **OR TWO** ROUNDS, AND ITS NAME SAID OTHERWISE.
+ *
+ * It looped two passes over both seats and submitted whenever a seat `owes` something.
+ * The reasoning behind the two passes was sound — the Supplier owes nothing until the
+ * Retailer's message closes stage 1, so one pass over the seats plays half a round — but
+ * the loop had no idea when to STOP. Measured, with a probe printing round and history
+ * around each call:
+ *
+ *   seatOrder [retailer,supplier]  round 1->3  history 0->2   ← TWO rounds in one call
+ *   seatOrder [supplier,retailer]  round 1->2  history 0->1   ← one round, plus a
+ *                                                              DANGLING message for the
+ *                                                              next one, which the next
+ *                                                              call then finishes
+ *
+ * So three calls produced 6 rounds in one group and 5 in the other, and the "3 rounds"
+ * assertions failed on a game that was behaving perfectly. Report rows 5+6 = 11, or 12
+ * when both groups happened to draw retailer-first.
+ *
+ * ⚠ AND THAT IS WHERE THE NONDETERMINISM CAME FROM — NOT FROM THE GAME. Seat order in
+ * `pids` follows LATE role assignment, which is seeded per group id, and group ids differ
+ * every run. The resolver is deterministic; the driver was not.
+ *
+ * ── THE FIX: RESOLVE ROLES FIRST, THEN ACT IN STAGE ORDER ────────────────────
+ * Exactly one message and exactly one production, addressed to the seat that holds the
+ * role — which is what the round-loop harness has always done, and why it is 47/47 and
+ * order-independent. `owes` is now an ASSERTION, not the loop condition: a driver that
+ * decides what to do by asking "does anyone owe anything?" cannot know when a round ends.
+ *
+ * The Retailer MISREPORTS in even rounds. A harness where every report is truthful never
+ * exercises the case the game is about, and every leak assertion would still pass on a
+ * build that simply echoed the true type as the message.
+ */
+async function playRound(gid, groupId, pids, round) {
+  // Roles are LATE: the pids array order says nothing about who holds which seat.
+  const seat = {}
+  for (const pid of pids) {
+    const v = await roundView(gid, pid, groupId)
+    if (!v.ok) continue
+    seat[v.result.view.role] = pid
+    inspectView(v.result.view, groupId, round, 'at open')
+  }
+  if (!seat.retailer || !seat.supplier) {
+    check(false, `round ${round}: both seats resolved (got ${Object.keys(seat).join(',') || 'none'})`)
+    return
+  }
+
+  // ── STAGE 1: the Retailer reports ──────────────────────────────────────────
+  const rv = await roundView(gid, seat.retailer, groupId)
+  if (!rv.ok) { check(false, `round ${round}: the retailer's view loaded`); return }
+  const { demandType, owes: rOwes } = rv.result.view
+  // `owes` as an assertion: the retailer must be the seat the round is waiting on.
+  check(rOwes === 'message', `round ${round}: the round opens owing a MESSAGE from the retailer (owes=${rOwes})`)
+  // The Retailer can see the true type — that is the one field they are allowed.
+  check(demandType === 'HIGH' || demandType === 'LOW',
+    `round ${round}: the retailer CAN see the true type (${demandType})`)
+  leakChecks += 1
+  const lie = round % 2 === 0
+  await submitMessage(gid, seat.retailer, groupId,
+    lie ? (demandType === 'HIGH' ? 'LOW' : 'HIGH') : demandType)
+
+  // ── STAGE 2: the Supplier produces, believing the report ───────────────────
+  // ⚠ THE READ THAT MATTERS MOST. This is the supplier's view with a message on the table
+  // and the round still live — precisely when the true type must NOT be reachable.
+  const sv = await roundView(gid, seat.supplier, groupId)
+  if (!sv.ok) { check(false, `round ${round}: the supplier's view loaded`); return }
+  inspectView(sv.result.view, groupId, round, 'mid-round')
+  check(sv.result.view.owes === 'production',
+    `round ${round}: stage 1 closed and the supplier now owes PRODUCTION (owes=${sv.result.view.owes})`)
+  // Believe the report: 3 lots on HIGH, 1 on LOW. Enough for a truthful and a
+  // misleading round to produce visibly different profits.
+  await submitProduction(gid, seat.supplier, groupId,
+    sv.result.view.currentMessage === 'HIGH' ? 3 : 1)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -374,6 +470,11 @@ async function main() {
   {
     const gid = 'e2e-classroom'
     const PIDS = ['stu1', 'stu2', 'stu3', 'stu4']
+
+    // ⚠ SET num_rounds EXPLICITLY. This block used to inherit the default and its
+    // completion assertions were coupled to that default being wrong. See ROUNDS above.
+    const cfg0 = await callFn('updateGameConfig', asDev(gid, { num_rounds: ROUNDS }))
+    check(cfg0.ok, `0. updateGameConfig num_rounds=${ROUNDS} — ${cfg0.ok ? 'ok' : cfg0.error}`)
 
     // 1. Sync roster (instructor). Proves the callback secret + roster URL wiring.
     const sr = await syncRoster(gid)
@@ -454,23 +555,58 @@ async function main() {
     for (const g of rosterSnap.result.groups) {
       byGroup[g.group_id] = Object.values(g.participants_by_role ?? {}).flat()
     }
-    for (let r = 1; r <= 3; r++) {
+    for (let r = 1; r <= ROUNDS_PLAYED; r++) {
       for (const g of groups) await playRound(gid, g.group_id, byGroup[g.group_id] ?? [], r)
     }
     const gEnd = (await dashboard(gid)).result?.groups ?? []
-    check(gEnd.length === 2 && gEnd.every((g) => g.status === 'finished'),
-      `6. all groups finished all 3 rounds through the student callables (${gEnd.length} groups)`)
+
+    /*
+      ⚠ THE CONFIG TOOK — asserted from the PRODUCT, separately from the outcome.
+      If `num_rounds` silently failed to apply, this fails as "the game is not the length
+      we configured" rather than surfacing three assertions later as an unexplained "not
+      finished". Expectation and behaviour from two different places, per §9.
+    */
+    check(gEnd.length === 2 && gEnd.every((g) => g.numRounds === ROUNDS),
+      `6. the game is the length we configured — every group reports numRounds=${ROUNDS} ` +
+      `(got ${gEnd.map((g) => g.numRounds).join(',') || 'none'})`)
+
+    // ⚠ LENGTH FIRST — `[].every(...)` is true.
+    checkCompletion(gEnd.length === 2 && gEnd.every((g) => g.status === 'finished'),
+      `6. all groups finished all ${ROUNDS} rounds through the student callables ` +
+      `(${gEnd.length} groups, statuses ${gEnd.map((g) => g.status ?? 'not_started').join(',')})`)
 
     // 7. History reached the student payload.
     check(groups.length === 2 && (byGroup[groups[0].group_id] ?? []).length === 2,
       '6. the roster reports 2 seats per group')
     const anyPid = (byGroup[groups[0]?.group_id] ?? [])[0]
     const v = await roundView(gid, anyPid, groups[0].group_id)
-    check(v.ok && v.result.view.history.length === 3, '7. the student sees 3 completed rounds in history')
+    checkCompletion(v.ok && v.result.view.history.length === ROUNDS,
+      `7. the student sees ${ROUNDS} completed rounds in history (got ${v.ok ? v.result.view.history.length : '?'})`)
 
     // 8. Reports (instructor).
+    /*
+      ⚠ EXPECTED FROM THE GROUP COUNT, NOT A LITERAL. It used to be a bare `6`, which is
+      two facts (two groups, three rounds) fused into one number that matches for the wrong
+      reasons. Deriving it means a run that forms three groups says so instead of reporting
+      a row-count mismatch.
+    */
     const rep = await callFn('getRoundReport', asDev(gid, {}))
-    check(rep.ok && rep.result.rows.length === 6, `8. per-round report has 6 rows (2 groups × 3 rounds) — got ${rep.ok ? rep.result.rows.length : '?'}`)
+    const wantRows = gEnd.length * ROUNDS
+    checkCompletion(rep.ok && rep.result.rows.length === wantRows,
+      `8. per-round report has ${wantRows} rows (${gEnd.length} groups × ${ROUNDS} rounds) — got ${rep.ok ? rep.result.rows.length : '?'}`)
+
+    /*
+      ⚠ ONE ROW PER (group, round), NO DUPLICATES. The row COUNT alone is equally true of a
+      report that emitted one round twice and skipped another — which is exactly the
+      double-resolution bug the count was suspected of hiding. This is the assertion that
+      rules it out, and it holds whatever the count turns out to be.
+    */
+    if (rep.ok) {
+      const keys = rep.result.rows.map((r) => `${r.group_id}:${r.round}`)
+      check(new Set(keys).size === keys.length,
+        `8. and every row is a distinct (group, round) — no round reported twice ` +
+        `(${keys.length} rows, ${new Set(keys).size} distinct)`)
+    }
 
     // 9. ⚠ SCORE & RECORD — the gradebook push must LAND classroom-side.
     pushed = []
@@ -499,8 +635,9 @@ async function main() {
 
     await syncRoster(gid)
     // Online is selected by the instructor turning the clock off.
-    const cfg = await callFn('updateGameConfig', asDev(gid, { clock_mode: 'off' }))
-    check(cfg.ok, `1. updateGameConfig clock_mode=off — ${cfg.ok ? 'ok' : cfg.error}`)
+    // ⚠ num_rounds EXPLICIT here too — this block also inherited the wrong default.
+    const cfg = await callFn('updateGameConfig', asDev(gid, { clock_mode: 'off', num_rounds: ROUNDS }))
+    check(cfg.ok, `1. updateGameConfig clock_mode=off, num_rounds=${ROUNDS} — ${cfg.ok ? 'ok' : cfg.error}`)
 
     for (const pid of PIDS) {
       await assignRole(gid, pid)
@@ -543,10 +680,22 @@ async function main() {
     // screen. Stopping at "a group opened" would leave the entire online scoring path
     // unexercised, and online is the mode nobody is watching when it breaks.
     const pids = firstGroup.occupants.map((o) => o.participant_id)
-    for (let r = 1; r <= 3; r++) await playRound(gid, firstGroup.group_id, pids, r)
+    for (let r = 1; r <= ROUNDS_PLAYED; r++) await playRound(gid, firstGroup.group_id, pids, r)
     const dEnd = await dashboard(gid)
+    const playedGroup = dEnd.ok ? dEnd.result.groups.find((g) => g.group_id === firstGroup.group_id) : null
+    // The config took — same separation as the classroom block.
+    check(playedGroup?.numRounds === ROUNDS,
+      `5. the online game is the length we configured (numRounds=${playedGroup?.numRounds ?? '?'})`)
+    /*
+      ⚠ THE GROUP WE PLAYED, NOT "at least one somewhere". `fin >= 1` counted finished
+      groups across the whole instance, so it would have been satisfied by any other group
+      reaching the end — and it says "the online group" in its own name. Only one group is
+      driven here, so name it.
+    */
     const fin = dEnd.ok ? dEnd.result.groups.filter((g) => g.status === 'finished').length : 0
-    check(fin >= 1, `5. the online group played all 3 rounds to completion (${fin} finished)`)
+    checkCompletion(playedGroup?.status === 'finished',
+      `5. the online group played all ${ROUNDS} rounds to completion ` +
+      `(status ${playedGroup?.status ?? 'not_started'}, ${fin} finished in the instance)`)
 
     // 6. ⚠ AND THE PUSH LANDS. Same assertion as the classroom path — read at the
     // classroom, not from the tick in our own UI.
