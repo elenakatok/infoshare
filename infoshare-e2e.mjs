@@ -708,6 +708,21 @@ async function main() {
       `10. the roster report lists all 4 students once scored (got ${base.ok ? base.result.rows.length : '?'})`)
 
     /*
+      10a. BOTH free-text questions reach the report — the BEFORE/AFTER pair.
+
+      ⚠ LOSING ONE OF THESE IS SILENT. `prep_expectation` (what students expect the signal
+      to be worth) and `debrief_reflection` (what they actually did) are read against each
+      other for the 9/28 lecture, and either report renders perfectly on its own — so half
+      the lecture can go missing with every screen looking right. It has already been
+      deleted once for reading like a warm-up. The frontend's Tier 2 gate catches a question
+      with no report; this catches the other direction, at the layer that actually serves it.
+    */
+    const reportQs = base.ok ? (base.result.questions ?? []).map((q) => q.field) : []
+    check(reportQs.length === 2 &&
+          reportQs.includes('prep_expectation') && reportQs.includes('debrief_reflection'),
+      `10a. the report serves BOTH free-text questions, before and after [${reportQs.join(', ')}]`)
+
+    /*
       10b. THE DENOMINATOR IS SEVEN, and it is counted rather than declared.
 
       The shared grader counts `grading: 'static'` questions at run time, so every KC score

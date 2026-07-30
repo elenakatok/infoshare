@@ -359,15 +359,34 @@ export function buildGradedQuestions(s: RoundSettings): Question[] {
   ]
 }
 
-// ── Q9: the debrief (Tier 2 reports are derived from these) ────────────────────
+// ── the free-text pair (Tier 2 reports are derived from these) ─────────────────
 
 /**
+ * TWO free-text questions, and they are a MATCHED PAIR — before and after.
+ *
+ * ⚠ `prep_expectation` IS NOT SCAFFOLDING, AND HAS ALREADY BEEN DELETED ONCE for looking
+ * like it. It captures what a student EXPECTS the Retailer's signal to be worth before
+ * they have played a round; Q9 captures what they actually did. The 9/28 lecture opens on
+ * the contrast — here is what the class predicted, here is what the class did — and a
+ * debrief on its own gives only the second half of that. Removing either one silently
+ * halves the lecture.
+ *
  * ⚠ EVERY QUESTION IN THIS LIST MUST HAVE A TIER 2 REPORT, and the test suite refuses
  * to pass otherwise. Adding one here without adding its id to `TIER2_REPORT_IDS`
  * (frontend/src/reports/reportIds.ts) fails the gate by name. That is the point: the
- * gate is a red test in this repo, not a line in a checklist somebody skips.
+ * gate is a red test in this repo, not a line in a checklist somebody skips. It is also
+ * what turns the deletion above into a failing build rather than a missing report.
  */
 export const FREE_TEXT_QUESTIONS: Question[] = [
+  // ⚠ VERBATIM from Information_Sharing_KC_Questions_v1.md Q0. Asked BEFORE play — the
+  // prediction half of the pair. Note it speaks in the third person ("the Retailer's
+  // signal") and hypothetically about the reader's own seat ("if you end up as Supplier"),
+  // because roles are still unassigned when this is answered.
+  freeText('prep_expectation', 10, 'preparation',
+    'Before you start: if you end up as Supplier, how much do you expect the Retailer\'s ' +
+    'signal to be worth to you — and why?',
+    'A sentence or two is plenty.'),
+
   // ⚠ VERBATIM from Information_Sharing_KC_Questions_v1.md Q9. Not a paraphrase — this
   // is the prompt Elena reads answers to when building the 9/28 lecture, and the Tier 2
   // report is grouped by role because Retailer and Supplier answers read very

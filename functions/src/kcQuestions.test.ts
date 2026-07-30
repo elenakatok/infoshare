@@ -39,11 +39,39 @@ const DEFAULTS = buildQuestions(DEFAULT_ROUND_SETTINGS)
 // ── the shape the spec locks ───────────────────────────────────────────────────
 
 describe('the question set (Information_Sharing_KC_Questions_v1)', () => {
-  it('is one gate, seven graded questions and one debrief paragraph', () => {
+  it('is one gate, seven graded questions and the two free-text halves', () => {
     const graded = DEFAULTS.filter((x) => x.grading === 'static')
     expect(graded).toHaveLength(7)
     expect(DEFAULTS.filter((x) => x.grading === 'assigned_role')).toHaveLength(1)
+    expect(DEFAULTS.filter((x) => x.category === 'preparation')).toHaveLength(1)
     expect(DEFAULTS.filter((x) => x.category === 'debrief')).toHaveLength(1)
+  })
+
+  it('keeps the BEFORE/AFTER free-text pair, and keeps them in that order', () => {
+    /*
+      ⚠ THIS TEST EXISTS BECAUSE `prep_expectation` WAS DELETED ONCE, for reading like a
+      warm-up. It is the prediction half: what a student expects the signal to be worth
+      BEFORE playing. `debrief_reflection` is what they actually did. The 9/28 lecture opens
+      on the contrast, so losing either one leaves a lecture with half its material and a
+      report that renders perfectly.
+    */
+    const freeText = DEFAULTS.filter((x) => x.format === 'text')
+    expect(freeText.map((x) => x.field)).toEqual(['prep_expectation', 'debrief_reflection'])
+    // Order is the ORDER FIELD, not array position — the platform sorts on it, and the
+    // prep question must reach the student before the game, not after it.
+    expect(freeText[0].order).toBeLessThan(freeText[1].order)
+    expect(freeText[0].category).toBe('preparation')
+    expect(freeText[1].category).toBe('debrief')
+  })
+
+  it('the prep question is ungraded and speaks hypothetically about the reader\'s seat', () => {
+    // Roles are still unassigned when this is answered, so it cannot address a Supplier
+    // directly — "if you end up as Supplier" is the whole reason for the conditional.
+    const prep = DEFAULTS.find((x) => x.field === 'prep_expectation')!
+    expect(prep.grading).toBeUndefined()
+    expect(prep.correct_value).toBeUndefined()
+    expect(prep.prompt).toContain('if you end up as Supplier')
+    expect(prep.prompt).toContain('the Retailer\'s')
   })
 
   it('is NOT role-split — every question targets everyone, one denominator of seven', () => {
@@ -62,12 +90,12 @@ describe('the question set (Information_Sharing_KC_Questions_v1)', () => {
     expect(GATE_QUESTION.prompt).toBe('Which role will you play in this game?')
   })
 
-  it('the debrief is format "text" — NOT "open_response"', () => {
+  it('BOTH free-text questions are format "text" — NOT "open_response"', () => {
     // 'open_response' is not a runtime value: it renders fine and reports NOTHING, which
     // is the worst failure shape there is — a Tier 2 report that is silently empty.
-    const debrief = DEFAULTS.filter((x) => x.category === 'debrief')
-    for (const x of debrief) expect(x.format).toBe('text')
-    expect(debrief[0].field).toBe('debrief_reflection')
+    for (const x of DEFAULTS) {
+      if (x.category === 'preparation' || x.category === 'debrief') expect(x.format).toBe('text')
+    }
   })
 
   it('every graded question is answerable: the key names one of its own options', () => {

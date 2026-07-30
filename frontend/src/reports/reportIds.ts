@@ -13,12 +13,17 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /*
-  ONE free-text question, one report. The spec's question set (Q1–Q9) has a single
-  free-text item — the Q9 debrief paragraph. The placeholder bank also carried a
-  `prep_expectation` warm-up; it was scaffolding, not spec content, and went with the rest
-  of the placeholder set. Its report id had to go with it or the gate fails as an orphan,
-  which is the gate working: a report outliving its question is exactly what it watches for.
+  TWO free-text questions, two reports — and they are a matched pair, not a question plus a
+  leftover.
+
+  ⚠ `prep_expectation` READS LIKE SCAFFOLDING AND IS NOT. It was deleted once on exactly
+  that reading. It is the BEFORE half: what a student expects the Retailer's signal to be
+  worth, answered before they have played a round. `debrief_reflection` is the AFTER half.
+  The 9/28 lecture opens on the contrast between them, so a report for one without the
+  other delivers half a lecture — and does it silently, because each report renders
+  perfectly on its own.
 */
 export const TIER2_REPORT_IDS: string[] = [
+  'prep_expectation',
   'debrief_reflection',
 ]
