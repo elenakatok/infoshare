@@ -221,14 +221,35 @@ export async function openRoundCore(
   }
 
   const ref = stateDoc(iid, groupId)
+  const groupRef = instanceRef.collection('groups').doc(groupId)
+  /*
+    ⚠ SEATS LOCK WHEN THE ROUND OPENS, AND THE STAMP IS WHAT MAKES THE LOCK REAL.
+    The shared seat machinery (game-server seatOps) decides "has this group started?" from
+    `seats_locked_at` on the GROUP doc — that is the per-group freeze that lets an
+    instructor rearrange not-started groups while other groups are mid-game. Infoshare
+    never wrote the field, so `hasStarted` was permanently false and every server-side
+    per-group guard was inert: moveSeat would happily pull a student out of a running game,
+    and — because `destinations` is filtered on the same flag — the dashboard offered
+    RUNNING groups as places to put a stranded student. The 🔒 chip on the row came from a
+    different fact (a round-state doc exists), so the UI looked right while the callable
+    underneath it was unguarded.
+
+    Crisis has always stamped this at open (crisisRound.ts). Written here, at the one place
+    a round becomes open, so the lock cannot drift from the thing it represents.
+
+    ⚠ ONLY ON CREATION. A late arrival re-entering openRoundCore must not re-stamp a group
+    that already opened — the timestamp is also read as "when did this group start".
+  */
   if (opts.idempotent) {
     // A late arrival must never RESET a group that has already opened and progressed.
     await admin.firestore().runTransaction(async (tx) => {
       if ((await tx.get(ref)).exists) return
       tx.set(ref, payload)
+      tx.set(groupRef, { seats_locked_at: FieldValue.serverTimestamp() }, { merge: true })
     })
   } else {
     await ref.set(payload)
+    await groupRef.set({ seats_locked_at: FieldValue.serverTimestamp() }, { merge: true })
   }
   // (1) A ROUND HAS OPENED — the Retailer seat now owes a message, and it may be a bot.
   // Running here is what lets a bot-Retailer act before any human has done anything;
