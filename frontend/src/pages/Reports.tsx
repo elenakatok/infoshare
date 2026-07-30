@@ -3,7 +3,10 @@ import {
   GameHeader, ReportBoard, RosterReport, RosterNameCell, FreeTextReportSet,
   type ReportTileConfig, type SortableColumn, type RosterReportRow, type FreeTextAnswer,
 } from '@mygames/game-ui'
-import { getReportData, getRoundReport, type StudentRoundRow, type ReportRow } from '../api'
+import {
+  getReportData, getRoundReport, getOnlineReport,
+  type StudentRoundRow, type ReportRow, type OnlineReport, type OnlineReportStudent,
+} from '../api'
 import { SEAT_ROLE_LABELS } from '../gameConfig'
 import { ALL_QUESTIONS } from '../../../functions/src/kcQuestions'
 import { babblingVsCredible } from '../../../functions/src/round/resolver'
@@ -57,6 +60,73 @@ function Figure({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
+/*
+  ── ASSIGNMENT STATUS — crisis's Slice-O3 table, ported ──────────────────────────
+  ⚠ THIS IS THE "WHO DO I EMAIL" VIEW, NOT A GRADE. Every other tile on this page asks
+  what the class DID; this one asks who is missing and who to chase, which in an online
+  section is the question that actually costs an instructor their week. `getOnlineReport`
+  has been deployed and had an api wrapper here for some time with NO screen calling it —
+  the data was already being computed and thrown away.
+
+  Columns, labels, colours and the footnote are crisis's, so an instructor reading both
+  games reads one table. Two columns are infoshare's own shape: `rounds` appears next to
+  "Finished" (crisis does the same), and "Stages missed" counts defaulted stages, which in
+  a no-clock online section should be ~0 — a non-zero value there is worth seeing.
+*/
+const catLabel: Record<OnlineReportStudent['category'], string> = {
+  finished: 'Finished', in_progress: 'Mid-game', never_started: 'Not started', no_group: 'No group',
+}
+type StatusKey = 'name' | 'group' | 'category' | 'arrived' | 'lastLogin' | 'flagged' | 'bots' | 'absences'
+type StatusRow = OnlineReportStudent & RosterReportRow
+
+function statusColumns(absenceLabel: string, arrivalKnown: boolean): SortableColumn<StatusRow, StatusKey>[] {
+  const warn = (on: boolean): React.CSSProperties =>
+    ({ color: on ? '#b45309' : undefined, fontWeight: on ? 600 : undefined })
+  return [
+    { key: 'name', label: 'Name', render: (r) => r.name, compare: (a, b) => a.name.localeCompare(b.name) },
+    { key: 'group', label: 'Group', render: (r) => r.groupNumber ?? '—', compare: (a, b) => (a.groupNumber ?? Infinity) - (b.groupNumber ?? Infinity) },
+    {
+      key: 'category', label: 'Status',
+      render: (r) => `${catLabel[r.category]}${r.category === 'finished' && r.rounds != null ? ` · ${r.rounds} rounds` : ''}`,
+      compare: (a, b) => a.category.localeCompare(b.category),
+    },
+    {
+      key: 'arrived', label: 'Arrived',
+      // null = the game is not recording arrivals at all. Saying "?" is the honest answer;
+      // rendering "—" would accuse every student of not turning up.
+      render: (r) => (!arrivalKnown || r.arrived === null)
+        ? <span title="This game is not recording arrivals — not an absence." style={{ color: '#94a3b8' }}>?</span>
+        : <span style={{ color: r.arrived ? '#15803d' : '#b45309' }}>{r.arrived ? '✓' : '—'}</span>,
+      compare: (a, b) => Number(a.arrived ?? -1) - Number(b.arrived ?? -1),
+    },
+    {
+      key: 'lastLogin', label: 'Last login',
+      render: (r) => <span style={warn(r.lastLoginMs === null)}>{r.lastLoginMs === null ? 'never' : new Date(r.lastLoginMs).toLocaleString()}</span>,
+      compare: (a, b) => (a.lastLoginMs ?? -1) - (b.lastLoginMs ?? -1),
+    },
+    {
+      key: 'flagged', label: 'Flagged',
+      render: (r) => (r.flagged ? <span style={{ color: '#b45309', fontWeight: 700 }}>⚑</span> : ''),
+      compare: (a, b) => Number(a.flagged) - Number(b.flagged),
+    },
+    {
+      key: 'bots', label: 'Bots',
+      render: (r) => (r.playedWithBots
+        ? <span title="Played in a bot-filled group" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#b45309' }}>bots</span>
+        : ''),
+      compare: (a, b) => Number(a.playedWithBots) - Number(b.playedWithBots),
+    },
+    {
+      // The LABEL is the server's (`absence_label` — infoshare says "Missed decisions",
+      // crisis "Stages missed"). The game owns its own copy for this; the screen must not
+      // hardcode another game's word for it.
+      key: 'absences', label: absenceLabel,
+      render: (r) => <span style={warn(r.absences > 0)}>{r.absences}</span>,
+      compare: (a, b) => a.absences - b.absences,
+    },
+  ]
+}
+
 const IS_TH: React.CSSProperties = {
   textAlign: 'left', padding: '0.4rem 0.7rem', borderBottom: '2px solid #ddd',
   fontSize: '0.8rem', fontWeight: 600, whiteSpace: 'nowrap', background: '#faf7f2',
@@ -80,6 +150,20 @@ export default function Reports() {
   const [active, setActive] = useState<string | null>(null)
   const [groupPick, setGroupPick] = useState<string>('all')
   const [error, setError] = useState<string | null>(null)
+  const [online, setOnline] = useState<OnlineReport | null>(null)
+  // The per-group view keeps its OWN selection, separate from ScopePicker's: that one has a
+  // "Whole class" option and this one must always be looking at exactly one group.
+  const [byGroup, setByGroup] = useState<string | null>(null)
+
+  /*
+    Assignment status is fetched SEPARATELY and best-effort — crisis's rule. It is an
+    operational view; if it fails (an older deployment, a permissions hiccup) the debrief
+    tiles must still open, so its failure is swallowed and its tile simply stays disabled
+    rather than taking the whole page down with an error banner.
+  */
+  useEffect(() => {
+    getOnlineReport().then(setOnline).catch(() => { /* operational report is best-effort */ })
+  }, [])
 
   useEffect(() => {
     void (async () => {
@@ -182,6 +266,68 @@ export default function Reports() {
   const hasData = behavioural(roundRows).length > 0
   const scopeLabel = groupPick === 'all' ? 'whole class' : `group ${groups.find(([g]) => g === groupPick)?.[1]}`
 
+  // ── By group: one group's own rounds, charts, headline numbers and seats ──────
+  // Default to the first group as soon as the data lands, so opening the tile never shows
+  // an empty selector. Recomputed from `groups`, which is derived from the round rows.
+  const gid = byGroup ?? groups[0]?.[0] ?? null
+  const gNumber = groups.find(([g]) => g === gid)?.[1] ?? null
+  const gRows = useMemo(() => roundRows.filter((r) => r.group_id === gid), [roundRows, gid])
+  const gTw = useMemo(() => trustworthiness(gRows), [gRows])
+  const gTr = useMemo(() => trust(gRows), [gRows])
+  const gSum = useMemo(() => summary(gRows), [gRows])
+  /*
+    ⚠ THE SEATS COME FROM THE GROUP'S OWN ROUND ROWS, NOT FROM `rows`. `rows` is built on
+    getReportData, whose roster rows carry raw_score and therefore only populate once the
+    instance has been scored — so filtering it by group number rendered an EMPTY seats table
+    on a group whose charts directly above it were full of data. Deriving from the same
+    round rows that feed the charts means the two halves of this modal can never disagree.
+    Names still come from `rows` when they are there, falling back to the participant id.
+  */
+  const nameByPid = useMemo(() => new Map(rows.map((r) => [r.participantId, r.name])), [rows])
+  const gSeats = useMemo(() => {
+    const agg = new Map<string, { role: string | null; rounds: number; profit: number; lowTrue: number; lowTold: number }>()
+    for (const r of gRows) {
+      const live = !(r.defaulted.retailer || r.defaulted.supplier)
+      for (const seat of [r.retailerSeat, r.supplierSeat]) {
+        const pid = r.pidBySeat[seat]
+        if (!pid || pid.startsWith('bot_')) continue
+        const role = r.roleBySeat[seat] ?? null
+        const cur = agg.get(pid) ?? { role, rounds: 0, profit: 0, lowTrue: 0, lowTold: 0 }
+        cur.rounds += 1
+        cur.profit += role === 'retailer' ? r.profits.retailer : r.profits.supplier
+        if (role === 'retailer' && r.demandType === 'LOW' && live) {
+          cur.lowTrue += 1
+          if (r.truthful) cur.lowTold += 1
+        }
+        agg.set(pid, cur)
+      }
+    }
+    return [...agg.entries()].map(([pid, a]) => ({
+      participantId: pid,
+      name: nameByPid.get(pid) ?? pid,
+      role: a.role,
+      roundsPlayed: a.rounds,
+      totalProfit: a.profit,
+      truthAboutLow: a.role === 'retailer' && a.lowTrue > 0 ? a.lowTold / a.lowTrue : null,
+    })).sort((x, y) => x.name.localeCompare(y.name))
+  }, [gRows, nameByPid])
+
+  /*
+    RosterReportRow's `role` / `rawScore` are filled with null and NOT rendered: this table
+    has its own columns and its legend is off. They exist only so the shared sortable table
+    accepts the rows — a status view has no score, and saying so with null is honest,
+    whereas inventing one would put a number next to "Not started".
+  */
+  const onlineStudents: StatusRow[] = useMemo(
+    () => (online?.students ?? []).map((s) => ({ ...s, role: null, rawScore: null })),
+    [online],
+  )
+  const statusCols = useMemo(
+    () => statusColumns(online?.absence_label ?? 'Missed', online?.arrival_data_present ?? false),
+    [online?.absence_label, online?.arrival_data_present],
+  )
+  const hasOnline = (online?.groups.length ?? 0) > 0
+
   const tiles: ReportTileConfig[] = [
     {
       id: 'summary', title: 'Overall',
@@ -212,6 +358,13 @@ export default function Reports() {
       onOpen: () => setActive('reciprocity'), disabled: !hasData, actionLabel: 'Open ↗',
     },
     {
+      id: 'group', title: 'By group',
+      preview: groups.length
+        ? <span data-testid="tile-group" style={{ fontSize: '0.9rem', color: '#555' }}>{groups.length} group{groups.length === 1 ? '' : 's'} · one group&apos;s trust and trustworthiness</span>
+        : <span data-testid="tile-group" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No groups with completed rounds yet.</span>,
+      onOpen: () => setActive('group'), disabled: !groups.length, actionLabel: 'Open ↗',
+    },
+    {
       id: 'students', title: 'Per-student',
       preview: rows.length
         ? <span data-testid="tile-students" style={{ fontSize: '0.9rem', color: '#555' }}>{rows.length} students · sortable</span>
@@ -222,6 +375,16 @@ export default function Reports() {
       id: 'debrief', title: 'Debrief answers',
       preview: <span data-testid="tile-debrief" style={{ fontSize: '0.9rem', color: '#555' }}>free-text, grouped by role</span>,
       onOpen: () => setActive('debrief'), actionLabel: 'Open ↗',
+    },
+    {
+      id: 'online', title: 'Assignment status',
+      preview: hasOnline
+        ? <span data-testid="tile-online" style={{ fontSize: '0.9rem', color: '#555' }}>
+            {online!.counts.finished} finished · {online!.counts.inProgress} mid-game · {online!.counts.neverStarted} not started
+            {online!.counts.flagged > 0 ? <> · <span style={{ color: '#b45309', fontWeight: 700 }}>{online!.counts.flagged} ⚑</span></> : ''}
+          </span>
+        : <span data-testid="tile-online" style={{ color: '#94a3b8', fontSize: '0.85rem' }}>No groups yet.</span>,
+      onOpen: () => setActive('online'), disabled: !hasOnline, actionLabel: 'Open ↗',
     },
   ]
 
@@ -335,6 +498,56 @@ export default function Reports() {
           </Modal>
         )}
 
+        {/* ── By group: a selector, then that ONE group's charts, numbers and seats ── */}
+        {active === 'group' && gid && (
+          <Modal title="By group" wide onClose={() => setActive(null)}>
+            <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <label style={{ fontWeight: 600 }}>Group</label>
+              <select data-testid="report-group-select" value={gid} onChange={(e) => setByGroup(e.target.value)}>
+                {groups.map(([g, n]) => <option key={g} value={g}>Group {n}</option>)}
+              </select>
+              <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                {gSum.rounds} round{gSum.rounds === 1 ? '' : 's'} of behaviour
+                {gSum.excludedDefaults > 0 && ` · ${gSum.excludedDefaults} excluded (clock default)`}
+              </span>
+            </div>
+
+            <div data-testid="report-group-figures" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <Figure label="Truthful about LOW" value={pct(gSum.truthfulAboutLow)} note="where the game happens" />
+              <Figure label="Avg order after LOW" value={two(gSum.orderAfterLow)} />
+              <Figure label="Avg order after HIGH" value={two(gSum.orderAfterHigh)} />
+              <Figure label="Avg retailer profit" value={two(gSum.retailerProfit)} note="per round" />
+              <Figure label="Avg supplier profit" value={two(gSum.supplierProfit)} note="per round" />
+            </div>
+
+            <h4 style={{ margin: '1.25rem 0 0.5rem' }}>Trustworthiness by round</h4>
+            <TrustworthinessChart data={gTw} scope={`group ${gNumber}`} />
+            <h4 style={{ margin: '1.25rem 0 0.5rem' }}>Trust by round</h4>
+            <TrustChart data={gTr} scope={`group ${gNumber}`} />
+
+            <h4 style={{ margin: '1.25rem 0 0.5rem' }}>Seats</h4>
+            <div style={{ overflowX: 'auto', border: '1px solid #ddd', borderRadius: 6 }}>
+              <table data-testid="report-group-table" style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr>
+                  <th style={IS_TH}>Student</th><th style={IS_TH}>Role</th><th style={IS_TH}>Rounds</th>
+                  <th style={IS_TH}>Truth about LOW</th><th style={IS_TH}>Total profit</th>
+                </tr></thead>
+                <tbody>
+                  {gSeats.map((r) => (
+                    <tr key={r.participantId}>
+                      <td style={{ ...IS_TD, whiteSpace: 'nowrap' }}>{r.name}</td>
+                      <td style={IS_TD}>{r.role === 'retailer' ? 'Retailer' : r.role === 'supplier' ? 'Supplier' : '—'}</td>
+                      <td style={IS_TD}>{r.roundsPlayed}</td>
+                      <td style={IS_TD}>{r.role === 'retailer' ? pct(r.truthAboutLow) : '—'}</td>
+                      <td style={IS_TD}>{r.totalProfit.toFixed(0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Modal>
+        )}
+
         {active === 'students' && (
           <Modal title="Per-student" wide onClose={() => setActive(null)}>
             <RosterReport<Row, ColKey>
@@ -356,6 +569,33 @@ export default function Reports() {
               groupByRole={{ debrief_reflection: true }}
               roleLabels={SEAT_ROLE_LABELS}
             />
+          </Modal>
+        )}
+
+        {/* ── Assignment status: who finished / mid / never started, and who to chase ── */}
+        {active === 'online' && online && (
+          <Modal title="Assignment status" wide onClose={() => setActive(null)}>
+            <div data-testid="report-online" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              <Figure label="Finished" value={String(online.counts.finished)} note="played to the end" />
+              <Figure label="Mid-game" value={String(online.counts.inProgress)} note="started, not done" />
+              <Figure label="Not started" value={String(online.counts.neverStarted)} note="never opened round 1" />
+              <Figure label="Flagged (open)" value={String(online.counts.flagged)} note="can't-reach reports still live" />
+            </div>
+            <RosterReport<StatusRow, StatusKey>
+              rows={onlineStudents}
+              columns={statusCols}
+              initialSortKey="group"
+              showLegend={false}
+              testIds={{ root: 'status-root', table: 'status-table', row: (r) => `status-row-${r.participantId}` }}
+              cellStyles={{ header: IS_TH, cell: IS_TD }}
+            />
+            <p style={{ fontSize: '0.72rem', color: '#94a3b8', margin: '0.4rem 0.7rem' }}>
+              The <span style={{ color: '#b45309' }}>⚑ flag</span> is a pre-play &ldquo;can&rsquo;t reach my
+              group&rdquo; report; <span style={{ color: '#b45309' }}>{online.absence_label}</span> is absence
+              during play. This view is for reaching out, not a grade.
+              {!online.arrival_data_present && <> · <strong>Arrivals are not being recorded for this
+              instance</strong>, so &ldquo;Arrived&rdquo; reads ? rather than no.</>}
+            </p>
           </Modal>
         )}
       </main>

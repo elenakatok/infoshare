@@ -277,21 +277,35 @@ export type OnlineReportGroup = {
   reporterName: string | null
   rounds: number
 }
+/*
+  ⚠ READ OFF THE SHARED FACTORY'S ACTUAL RETURN, NOT CRISIS'S. This type used to declare
+  `timeouts: number` and `arrived: boolean` and `clock_mode` — crisis's LOCAL getOnlineReport
+  shape. Infoshare's is `makeGetOnlineReport`, which returns `absences`, `arrived: boolean |
+  null`, `absence_label` and `arrival_data_present`, and NO clock_mode. Nothing caught it
+  because the type WAS the lie: the first screen to read `r.timeouts` compiled cleanly and
+  rendered an empty column. Same failure as the `members` vs `occupants` note above.
+
+  `arrived: null` and `arrival_data_present: false` are not "did not arrive" — they mean the
+  game is not writing arrived[] at all, which is a wiring bug the UI must SAY rather than
+  render as a class of absentees.
+*/
 export type OnlineReportStudent = {
   participantId: string
   name: string
   groupNumber: number | null
   category: GroupCategory | 'no_group'
-  arrived: boolean
+  arrived: boolean | null
   lastLoginMs: number | null
   flagged: boolean
   playedWithBots: boolean
-  timeouts: number
+  /** In-play absence count. Infoshare's copy for it is `absence_label` ("Missed decisions"). */
+  absences: number
   rounds: number | null
 }
 export type OnlineReport = {
   ok: boolean
-  clock_mode: string
+  absence_label: string
+  arrival_data_present: boolean
   counts: { finished: number; inProgress: number; neverStarted: number; flagged: number }
   groups: OnlineReportGroup[]
   students: OnlineReportStudent[]
