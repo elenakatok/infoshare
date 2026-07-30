@@ -1,7 +1,7 @@
 import type { Outcome, OutcomeSchema, RoleConfig } from '@mygames/game-engine'
 import type { GameDefinition, PrepTextQuestion } from '@mygames/game-server'
-import { ALL_QUESTIONS } from './kcQuestions'
-import { DEFAULT_ROUND_SETTINGS as D, CONFIG_KEYS } from './round/settings'
+import { ALL_QUESTIONS, buildQuestions } from './kcQuestions'
+import { DEFAULT_ROUND_SETTINGS as D, CONFIG_KEYS, settingsFromConfig } from './round/settings'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE GAME DEFINITION — Information Sharing (infoshare).
@@ -196,13 +196,27 @@ export const infoshareGameDef: GameDefinition = {
   ],
 
   /**
-   * The question bank. Imported from a dependency-free module so the frontend's Tier 2
-   * coverage gate can assert against THE SAME LIST rather than a copy of it.
+   * The question bank, REBUILT FROM THIS INSTANCE'S CONFIG on every serve and every grade.
    *
-   * `satisfies` rather than a cast: it type-checks the structural mirror against the
-   * real `PrepTextQuestion` here, at the one place both types are in scope.
+   * ⚠ THIS IS THE LINE THAT KEEPS THE KNOWLEDGE CHECK HONEST. Four of the seven graded
+   * questions are about the payoff table and the demand triple, and both are editable in
+   * Settings. A bank built once at module load encodes the DEFAULT market: an instructor
+   * who changes a price for their section gets a check that marks a student wrong for
+   * reading the payoff table in front of them correctly. Nothing throws, nothing logs, and
+   * the only trace is one question the whole class fails.
+   *
+   * `prepDefaultsFor` (game-server ≥ 0.25.0) is what makes the drift unrepresentable
+   * rather than merely unlikely — the SAME derivation serves and grades, because it is
+   * called per request by all four question functions and by the Settings page.
+   *
+   * `prepDefaults` stays as the no-config fallback and is what the frontend's Tier 2
+   * coverage gate asserts against. `satisfies` rather than a cast: it type-checks the
+   * structural mirror against the real `PrepTextQuestion` here, at the one place both
+   * types are in scope.
    */
   prepDefaults: ALL_QUESTIONS satisfies PrepTextQuestion[] as PrepTextQuestion[],
+  prepDefaultsFor: (cd) =>
+    buildQuestions(settingsFromConfig(cd)) satisfies PrepTextQuestion[] as PrepTextQuestion[],
 
   /** Legacy stub fields. Must be present; content is served via `prepDefaults`. */
   content: {

@@ -4,6 +4,7 @@ import {
   type ReportTileConfig, type SortableColumn, type RosterReportRow, type FreeTextAnswer,
 } from '@mygames/game-ui'
 import { getReportData, getRoundReport, type StudentRoundRow, type ReportRow } from '../api'
+import { SEAT_ROLE_LABELS } from '../gameConfig'
 import { ALL_QUESTIONS } from '../../../functions/src/kcQuestions'
 import { babblingVsCredible } from '../../../functions/src/round/resolver'
 import { DEFAULT_ROUND_SETTINGS } from '../../../functions/src/round/settings'
@@ -353,7 +354,7 @@ export default function Reports() {
               questions={ALL_QUESTIONS}
               answersByQuestion={answers}
               groupByRole={{ debrief_reflection: true }}
-              roleLabels={{ retailer: 'Retailer', supplier: 'Supplier' }}
+              roleLabels={SEAT_ROLE_LABELS}
             />
           </Modal>
         )}

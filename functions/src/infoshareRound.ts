@@ -515,6 +515,32 @@ export const getGameDashboard = onCall(CORS, async (request) => {
   const settings = await settingsFor(iid)
   const byId = new Map(roundsSnap.docs.map((d) => [d.id, readStored(d.data())]))
 
+  /*
+    ⚠ SEAT ROLES, FOR THE ROSTER'S ROLE COLUMN — and the only place they can come from.
+
+    The MATCHING role is `player` for every student in this game: groups are formed from
+    undifferentiated seats and Retailer/Supplier are handed out late, inside the round loop,
+    into `state.roleBySeat`. Nothing ever writes them onto the participant document, and
+    nothing should — `participants/{id}.role` is what scoring, the z-score pool, matching
+    and the late-assignment KC gate all key off, and `computeScoreBreakdown` returns 0 for
+    any role that is not `player`. So the roster's Role column had no way to read anything
+    but "player" for the whole class.
+
+    This map is that way: DISPLAY data, derived per request from the round state, keyed by
+    participant. game-ui's `displayRoles` consumes it; the participant document is untouched.
+
+    ⚠ SAFE TO PUBLISH, unlike the draw. Roles are fixed for the whole game and both students
+    know both of them — the same reasoning that already puts `waitingOnRoles` on this
+    payload. Do NOT extend it to anything the reveal rule is withholding.
+  */
+  const seatRoles: Record<string, string> = {}
+  for (const stored of byId.values()) {
+    for (const [seat, pid] of Object.entries(stored.pid_by_seat ?? {})) {
+      const role = roleOfSeat(stored.state, Number(seat))
+      if (role) seatRoles[pid] = role
+    }
+  }
+
   const groups = groupsSnap.docs.map((g, i) => {
     const stored = byId.get(g.id)
     if (!stored) return { group_id: g.id, groupNumber: i + 1, started: false }
@@ -547,5 +573,5 @@ export const getGameDashboard = onCall(CORS, async (request) => {
       // Deliberately NOT the hidden round field. See the warning above.
     }
   })
-  return { ok: true, groups }
+  return { ok: true, groups, seat_roles: seatRoles }
 })

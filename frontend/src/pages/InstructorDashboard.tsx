@@ -1,16 +1,27 @@
 import { useState } from 'react'
 import { InstructorDashboard as SharedDashboard, type DeadlockResolutionProps, type OutcomeFields } from '@mygames/game-ui'
 import { auth, functions, rtdb } from '../firebase'
-import { submitInstructorOutcome } from '../api'
+import { getGameDashboard, submitInstructorOutcome } from '../api'
 import GameControlStrip from './GameControlStrip'
-import { getGameDashboard } from '../api'
-import { infoshareRoleConfig } from '../gameConfig'
+import { infoshareRoleConfig, displayRoleLabels } from '../gameConfig'
 
-// ── Role labels from game config (SINGLE matching role — `player`) ─────────────
-
+// ── Two role vocabularies, and they are not interchangeable ───────────────────
+//
+// MATCHING roles: exactly one, `player`. This is what gates Match Now (the shared
+// dashboard requires `composition[key] ?? 1` present participants for every key it is
+// given), what the latecomer list reads, and what the deadlock members line prints.
 const roleLabels = Object.fromEntries(
   infoshareRoleConfig.roles.map(r => [r.key, r.label])
 )
+
+// SEAT roles: what the students are actually playing. Assigned late, inside the round
+// loop, and never written to the participant document — so the roster's Role column and
+// its Show: filter said "player" for the entire class while two people visibly played
+// Retailer and Supplier. `displayRoleLabels` (gameConfig.ts) is that vocabulary.
+//
+// ⚠ THEY MUST NOT GO INTO `roleLabels`. Match Now would then wait forever for a Retailer
+// to be present, and nobody holds a role that is handed out after matching.
+// `displayRoles` is the display-only channel that exists for exactly this shape of game.
 
 // ── Manual outcome control (PLACEHOLDER) ───────────────────────────────────────
 //
@@ -104,11 +115,22 @@ async function confirmFinalize(): Promise<boolean> {
 }
 
 export default function InstructorDashboard() {
+  /*
+    Participant → seat role, lifted from the control strip's existing four-second poll
+    rather than fetched again here. `setSeatRoles` is passed straight down because it is a
+    stable reference: the strip holds it in the dependency chain of its poll interval.
+  */
+  const [seatRoles, setSeatRoles] = useState<Record<string, string>>({})
+
   return (
     <>
       <SharedDashboard
         title="Instructor Dashboard — Information Sharing"
         roleLabels={roleLabels}
+        displayRoles={{
+          labels: displayRoleLabels,
+          roleOf: p => seatRoles[p.participant_id] ?? null,
+        }}
         DeadlockResolutionControl={ManualOutcomeControl}
         submitInstructorOutcome={async (groupId, outcome) => { await submitInstructorOutcome(groupId, outcome) }}
         functions={functions}
@@ -125,7 +147,7 @@ export default function InstructorDashboard() {
           component's DOM — right place, fragile means. The slot is the same position
           declared rather than reached for.
         */
-        underHeadline={<GameControlStrip />}
+        underHeadline={<GameControlStrip onSeatRoles={setSeatRoles} />}
       />
     </>
   )

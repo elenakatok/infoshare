@@ -216,8 +216,16 @@ export type DashboardGroup = {
   // students read it; anything withheld from a student must be withheld from it too.
 }
 
+/**
+ * `seat_roles` is participant → assigned SEAT role ('retailer' | 'supplier'), for the
+ * roster's Role column. Absent for a group that has not opened yet: seat roles are
+ * assigned inside the round loop, never on the participant document, so before the first
+ * round there is genuinely nothing to report. See infoshareRound.ts for why this is a
+ * display channel rather than a write to `participants/{id}.role`.
+ */
 export const getGameDashboard = () =>
-  callFn<{ ok: boolean; groups: DashboardGroup[] }>('getGameDashboard', {})
+  callFn<{ ok: boolean; groups: DashboardGroup[]; seat_roles?: Record<string, string> }>(
+    'getGameDashboard', {})
 
 /** Launcher action: start the round loop for ONE group. */
 export const openRound = (groupId: string) =>

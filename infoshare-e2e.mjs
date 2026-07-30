@@ -180,6 +180,45 @@ const genCode = (gid) => callFn('generateAttendanceCode', asDev(gid, {}))
 /** Student: opening the launch link. */
 const assignRole = (gid, pid) => callFn('assignRole', asStudent(gid, pid, {}))
 
+/**
+ * Student: answer every graded KC question, one at a time, through the per-question grader.
+ *
+ * ⚠ THIS IS THE TRAP THE HARNESS WAS MISSING. A knowledge check needs BOTH
+ * `submitKnowledgeCheck` (the gate) and `submitStaticKnowledgeCheckQuestion` (one question,
+ * graded on the spot). Answering only the gate — which is all this harness used to do —
+ * exercises none of the graded seven: the KC renders perfectly and then throws
+ * "'kc_…' is not a valid graded KC question for your role" on the student's first answer,
+ * in class, after they have typed it.
+ *
+ * Each question is answered with its FIRST SERVED OPTION, which is not necessarily the
+ * right one — the options are shuffled per student and the answer key is (correctly)
+ * stripped from what the client receives, so the harness cannot know the right answer and
+ * should not be told. What is asserted here is that the SERVE AND GRADE PATHS AGREE: every
+ * field the server hands out is a field it will accept back, and the score lands on the
+ * expected denominator. Whether each key is the right key is settled in
+ * functions/src/kcQuestions.test.ts, where the market can be moved and the answers watched
+ * to move with it.
+ */
+async function answerGradedKC(gid, pid, served) {
+  const graded = (served ?? []).filter((q) => q.category === 'knowledge_check' && q.field !== 'kc_gate_role')
+  const results = []
+  for (const q of graded) {
+    const r = await callFn('submitStaticKnowledgeCheckQuestion',
+      asStudent(gid, pid, { field: q.field, answer: q.options?.[0]?.value ?? '' }))
+    results.push({ field: q.field, ok: r.ok, error: r.error, correct: r.ok ? r.result.correct : null })
+  }
+  const failed = results.filter((r) => !r.ok)
+  return {
+    // `ok` so this step is counted by the caller's per-step loop like every other one.
+    ok: graded.length > 0 && failed.length === 0,
+    error: graded.length === 0
+      ? 'no graded KC questions were served at all'
+      : failed.map((f) => `${f.field}: ${f.error}`).join('; '),
+    count: graded.length,
+    results,
+  }
+}
+
 /** Student: the knowledge check, prep, ready, attendance code. */
 async function studentPreGame(gid, pid, code) {
   const out = {}
@@ -188,6 +227,10 @@ async function studentPreGame(gid, pid, code) {
   // `answers: {}` is rejected — the first run failed on it, which is the point of
   // driving the real callable rather than a convenient stand-in.
   out.kc = await callFn('submitKnowledgeCheck', asStudent(gid, pid, { answer: 'player' }))
+  // The gate must pass first — the per-question grader is gated on
+  // knowledge_check_completed_at and would otherwise fail the precondition.
+  out.gradedKC = await answerGradedKC(gid, pid,
+    out.kcQuestions.ok ? out.kcQuestions.result.questions : [])
   out.prep = await callFn('completePrep', asStudent(gid, pid, {}))
   out.ready = await callFn('confirmReady', asStudent(gid, pid, {}))
   out.attend = await callFn('verifyAttendanceCode', asStudent(gid, pid, { code }))
@@ -488,6 +531,8 @@ async function main() {
 
     // 3. Each student: launch → KC → prep → ready → attendance code.
     let preGameOk = true
+    let gradedServed = null
+    let leakedKeys = []
     for (const pid of PIDS) {
       const ar = await assignRole(gid, pid)
       if (!ar.ok) { preGameOk = false; console.log(`     assignRole(${pid}): ${ar.error}`) }
@@ -495,9 +540,25 @@ async function main() {
       for (const [step, res] of Object.entries(r)) {
         if (!res.ok) { preGameOk = false; console.log(`     ${pid}/${step}: ${res.error}`) }
       }
+      gradedServed = r.gradedKC.count
+      // The answer key must not reach the client BEFORE the answer. It is stripped by the
+      // serve path, and a question carrying it would hand every student the answers.
+      for (const q of (r.kcQuestions.ok ? r.kcQuestions.result.questions : [])) {
+        for (const k of ['correct_value', 'grading', 'explanation']) {
+          if (k in q) leakedKeys.push(`${q.field}.${k}`)
+        }
+      }
       if (!(await beOnThePage(gid, pid))) { preGameOk = false; console.log(`     ${pid}/presence: failed`) }
     }
     check(preGameOk, '3. all four students completed launch → KC → prep → ready → attendance, and are ON THE PAGE')
+
+    // 3b. THE PER-QUESTION GRADER, end to end. Seven graded questions served, seven
+    // accepted back — the failure this catches is a bank whose fields the grader does not
+    // recognise, which renders perfectly and throws on the student's first answer.
+    check(gradedServed === 7,
+      `3b. seven graded KC questions served AND accepted by the per-question grader (got ${gradedServed})`)
+    check(leakedKeys.length === 0,
+      `3b. no answer key reaches the student before they answer${leakedKeys.length ? ` — LEAKED ${leakedKeys.join(', ')}` : ''}`)
 
     // 4. Match Now (instructor).
     const m = await matchNow(gid)
@@ -541,6 +602,26 @@ async function main() {
     check(g1.length === 2 && g1.every((g) => g.started),
       `5. every group is now STARTED — the control an instructor presses opens round 1 (${g1.length} groups)`)
     check(g1.length === 2 && g1.every((g) => g.round === 1), '5. and all are on round 1')
+
+    /*
+      5c. SEAT ROLES REACH THE DASHBOARD, which is what lets the roster's Role column say
+      Retailer and Supplier instead of "player" twenty times on a projected screen.
+
+      ⚠ ASSERTED HERE BECAUSE IT IS UNASSERTABLE ANYWHERE ELSE. The seat roles exist only
+      inside the round state; nothing writes them to the participant document (that field is
+      the MATCHING role, which scoring, the z-pool and the KC gate all key off). So this
+      payload is the only channel, and a rename in the round machine would silently empty it —
+      leaving a Role column that renders a blank instead of a role, with nothing failing.
+    */
+    const seatRoles = d1.ok ? (d1.result.seat_roles ?? {}) : {}
+    const roleVals = Object.values(seatRoles)
+    check(Object.keys(seatRoles).length === 4,
+      `5c. getGameDashboard reports a seat role for all 4 students (got ${Object.keys(seatRoles).length})`)
+    check(roleVals.length > 0 && roleVals.every((r) => r === 'retailer' || r === 'supplier'),
+      `5c. and every one is a real seat role, never the matching role [${[...new Set(roleVals)].sort().join(', ')}]`)
+    check(roleVals.filter((r) => r === 'retailer').length === 2 &&
+          roleVals.filter((r) => r === 'supplier').length === 2,
+      '5c. one Retailer and one Supplier per group — the deal, not a coin flip per student')
 
     // 5b. Re-pressable, and it does not reset a running group.
     const again = await startClass(gid)
@@ -625,6 +706,20 @@ async function main() {
     const base = await callFn('getReportData', asDev(gid, {}))
     check(base.ok && base.result.rows.length === 4,
       `10. the roster report lists all 4 students once scored (got ${base.ok ? base.result.rows.length : '?'})`)
+
+    /*
+      10b. THE DENOMINATOR IS SEVEN, and it is counted rather than declared.
+
+      The shared grader counts `grading: 'static'` questions at run time, so every KC score
+      must be k/7 for a whole k. This is the assertion that would fail if a graded question
+      were dropped, hidden, or made role-specific — the score would quietly land on /6 and
+      the gradebook would carry a different scale than the one the spec locked, with nothing
+      else on screen to say so.
+    */
+    const kcScores = base.ok ? base.result.rows.map((r) => r.knowledge_check_score) : []
+    const onSeven = kcScores.every((s) => s != null && Number.isInteger(Math.round(s * 7 * 1e6) / 1e6))
+    check(kcScores.length === 4 && onSeven,
+      `10b. every KC score sits on a denominator of 7 [${kcScores.map((s) => (s == null ? 'null' : s.toFixed(4))).join(', ')}]`)
   }
 
   // ── ONLINE: pre-grouped, no clock, groups auto-open on arrival ───────────────

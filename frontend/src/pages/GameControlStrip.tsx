@@ -86,7 +86,16 @@ function StartClass({ readyCount, onDone }: { readyCount: number; onDone: () => 
   )
 }
 
-export default function GameControlStrip() {
+/**
+ * `onSeatRoles` lifts the assigned seat roles up to the page, which passes them to the
+ * shared roster as display roles.
+ *
+ * ⚠ IT IS A CALLBACK RATHER THAN A SECOND POLL ON PURPOSE. This strip already polls
+ * `getGameDashboard` every four seconds and the seat roles ride along on that payload;
+ * a page-level poll for them would double the call rate on a projected screen for data
+ * that is already in hand. Only actual changes are propagated — see below.
+ */
+export default function GameControlStrip({ onSeatRoles }: { onSeatRoles?: (m: Record<string, string>) => void } = {}) {
   const [clockMode, setClockMode_] = useState<string | null>(null)
   const [modeSaving, setModeSaving] = useState(false)
   const [groups, setGroups] = useState<DashboardGroup[]>([])
@@ -109,6 +118,8 @@ export default function GameControlStrip() {
    */
   const [everLoaded, setEverLoaded] = useState(false)
   const failures = useRef(0)
+  /** Last seat-role map propagated upward, serialised — the change guard for `onSeatRoles`. */
+  const lastSeatRoles = useRef<string>('')
   /*
     ⚠ THE SEAT PICTURE COMES FROM A SECOND CALL, IN BOTH MODES. `getGameDashboard` knows
     the ROUND LOOP (round, stage, who owes) and nothing about seats; `getOnlineGroups`
@@ -135,6 +146,14 @@ export default function GameControlStrip() {
       const [dash, online] = await Promise.allSettled([getGameDashboard(), getOnlineGroups()])
       if (dash.status === 'rejected') throw dash.reason
       setGroups(dash.value.groups ?? [])
+      // Roles are fixed once assigned, so this settles after round 1 opens and then never
+      // changes again. Propagating only on change keeps the poll from re-rendering the
+      // whole roster every four seconds.
+      const roles = dash.value.seat_roles ?? {}
+      if (JSON.stringify(roles) !== lastSeatRoles.current) {
+        lastSeatRoles.current = JSON.stringify(roles)
+        onSeatRoles?.(roles)
+      }
       if (online.status === 'fulfilled') {
         setSeats(online.value.groups ?? [])
         setPool(online.value.no_group ?? [])
@@ -148,7 +167,11 @@ export default function GameControlStrip() {
       // Still starting up: stay quiet. Persistent, or after a good load: it is real.
       if (everLoaded || failures.current > STARTUP_GRACE) setError(msg)
     }
-  }, [everLoaded])
+    // ⚠ `onSeatRoles` MUST BE A STABLE REFERENCE (a useState setter, not an inline arrow):
+    // it is a dependency of `refresh`, which is a dependency of the effect that owns the
+    // poll interval. An identity that changes every render would tear down and re-create
+    // the interval on every render.
+  }, [everLoaded, onSeatRoles])
 
   useEffect(() => {
     void (async () => {

@@ -12,7 +12,13 @@
 // written to catch. Render the report in Reports.tsx, then add the id.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/*
+  ONE free-text question, one report. The spec's question set (Q1–Q9) has a single
+  free-text item — the Q9 debrief paragraph. The placeholder bank also carried a
+  `prep_expectation` warm-up; it was scaffolding, not spec content, and went with the rest
+  of the placeholder set. Its report id had to go with it or the gate fails as an orphan,
+  which is the gate working: a report outliving its question is exactly what it watches for.
+*/
 export const TIER2_REPORT_IDS: string[] = [
-  'prep_expectation',
   'debrief_reflection',
 ]
